@@ -139,27 +139,54 @@ typedef struct DatumTupleFields
 	 */
 } DatumTupleFields;
 
+// 具体参考 http://blog.itpub.net/31493717/viewspace-2220465/
 struct HeapTupleHeaderData
 {
 	union
 	{
-		HeapTupleFields t_heap;
+		/* 用于记录对元组执行插入/删除操作的事务ID和命令ID，这些信息主要用于并发控制时检
+		   查元组对事务的可见性 
+		*/
+		HeapTupleFields t_heap; 
+		/* 当一个新元组在内存中形成的时候，我们并不关心其事务可见性，因此在t_choice中只需用
+		   DatumTupleFields结构来记录元组的长度等信息。但在把该元组插入到表文件时，需要在元
+		   组头信息中记录插入该元组的事务和命令ID，故此时会把t_choice所占用的内存转换为
+		   HeapTupleFields结构并填充相应数据后再进行元组的插入
+		*/
 		DatumTupleFields t_datum;
 	}			t_choice;
 
+	/* 用于记录当前元组或者新元组的物理位置（block号及块内偏移量），若元组被更新（PostgreSQL对元组的更
+	   新采用的是标记删除旧版本元组并插入新版本元组的方式），则记录的是新版本元组的物理位置。PostgreSQL
+	   中对于元组采用多版本技术存储，对元组的每个更新操作都会产生一个新版本，版本之间从老到新形成一条版本
+	   链（将旧版本的t_ctid字段指向下一个版本的位置即可）
+	*/
 	ItemPointerData t_ctid;		/* current TID of this or newer tuple (or a
 								 * speculative insertion token) */
 
 	/* Fields below here must match MinimalTupleData! */
-
+	// 使用其低11位表示当前元组的属性个数，其他位则用于包括用于HOT技术及元组可见性的标志位
 	uint16		t_infomask2;	/* number of attributes + various flags */
 
+	/* 用于标识元组当前的状态，比如元组是否具有OID、是否有空属性等，t_infomask的每一位对应不同
+	   的状态，共16种状态
+
+	    #define HEAP_HASNULL           0x0001  has null attribute(s) 
+		#define HEAP_HASVARWIDTH       0x0002  has variable-width attribute(s) 
+		#define HEAP_HASEXTERNAL       0x0004  has external stored attribute(s)
+		#define HEAP_HASOID                0x0008  has an object-id field 
+		#define HEAP_XMAX_KEYSHR_LOCK  0x0010  xmax is a key-shared locker
+		#define HEAP_COMBOCID          0x0020  t_cid is a combo cid
+		#define HEAP_XMAX_EXCL_LOCK        0x0040  xmax is exclusive locker
+		#define HEAP_XMAX_LOCK_ONLY        0x0080  xmax, if valid, is only a locker
+	*/
 	uint16		t_infomask;		/* various flag bits, see below */
 
+	// 表示该元组头的大小
 	uint8		t_hoff;			/* sizeof header incl. bitmap, padding */
 
 	/* ^ - 23 bytes - ^ */
-
+	// 数组用于标识该元组哪些字段为空
 	bits8		t_bits[FLEXIBLE_ARRAY_MEMBER];	/* bitmap of NULLs */
 
 	/* MORE DATA FOLLOWS AT END OF STRUCT */
