@@ -160,6 +160,10 @@ struct HeapTupleHeaderData
 	   新采用的是标记删除旧版本元组并插入新版本元组的方式），则记录的是新版本元组的物理位置。PostgreSQL
 	   中对于元组采用多版本技术存储，对元组的每个更新操作都会产生一个新版本，版本之间从老到新形成一条版本
 	   链（将旧版本的t_ctid字段指向下一个版本的位置即可）
+
+	   如果对同一个数据更新多次，会造成多个版本形成 空间膨胀问题，参考：
+	   1. http://mysql.taobao.org/monthly/2017/10/01/
+	   2. http://mysql.taobao.org/monthly/2015/12/07/
 	*/
 	ItemPointerData t_ctid;		/* current TID of this or newer tuple (or a
 								 * speculative insertion token) */
@@ -170,15 +174,6 @@ struct HeapTupleHeaderData
 
 	/* 用于标识元组当前的状态，比如元组是否具有OID、是否有空属性等，t_infomask的每一位对应不同
 	   的状态，共16种状态
-
-	    #define HEAP_HASNULL           0x0001  has null attribute(s) 
-		#define HEAP_HASVARWIDTH       0x0002  has variable-width attribute(s) 
-		#define HEAP_HASEXTERNAL       0x0004  has external stored attribute(s)
-		#define HEAP_HASOID                0x0008  has an object-id field 
-		#define HEAP_XMAX_KEYSHR_LOCK  0x0010  xmax is a key-shared locker
-		#define HEAP_COMBOCID          0x0020  t_cid is a combo cid
-		#define HEAP_XMAX_EXCL_LOCK        0x0040  xmax is exclusive locker
-		#define HEAP_XMAX_LOCK_ONLY        0x0080  xmax, if valid, is only a locker
 	*/
 	uint16		t_infomask;		/* various flag bits, see below */
 
