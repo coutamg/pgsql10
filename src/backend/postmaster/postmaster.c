@@ -1425,7 +1425,7 @@ getInstallationPaths(const char *argv0)
 {
 	DIR		   *pdir;
 
-	/* Locate the postgres executable itself */
+	/* Locate the postgres executable itself 找到执行的二进制程序*/
 	if (find_my_exec(argv0, my_exec_path) < 0)
 		elog(FATAL, "%s: could not locate my own executable path", argv0);
 
@@ -4054,6 +4054,7 @@ BackendStartup(Port *port)
 	 * Everything's been successful, it's safe to add this backend to our list
 	 * of backends.
 	 */
+	printf("ddd test child pid: %d\n", pid);
 	bn->pid = pid;
 	bn->bkend_type = BACKEND_TYPE_NORMAL;	/* Can change later to WALSND */
 	dlist_push_head(&BackendList, &bn->elem);

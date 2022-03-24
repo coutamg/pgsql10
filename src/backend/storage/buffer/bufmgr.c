@@ -644,7 +644,7 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 	Buffer		buf;
 
 	/* Open it at the smgr level if not already done */
-	RelationOpenSmgr(reln);
+	RelationOpenSmgr(reln); // Smgr = Storage Manager，数据表存储管理封装
 
 	/*
 	 * Reject attempts to read non-local temporary relations; we would be
@@ -660,7 +660,7 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 	 * Read the buffer, and update pgstat counters to reflect a cache hit or
 	 * miss.
 	 */
-	pgstat_count_buffer_read(reln);
+	pgstat_count_buffer_read(reln); // 统计信息
 	buf = ReadBuffer_common(reln->rd_smgr, reln->rd_rel->relpersistence,
 							forkNum, blockNum, mode, strategy, &hit);
 	if (hit)
@@ -1437,7 +1437,7 @@ retry:
 	StrategyFreeBuffer(buf);
 }
 
-/*
+/* 设置缓冲块为Dirty（待Flush到数据文件）
  * MarkBufferDirty
  *
  *		Marks buffer contents as dirty (actual write happens later).

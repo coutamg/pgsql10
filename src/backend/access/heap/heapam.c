@@ -2350,7 +2350,7 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
 }
 
 
-/*
+/* main->PostmasterMain->ServerLoop->BackendStartup->BackendRun->PostgresMain->exec_simple_query->PortalRun->PortalRunMulti->ProcessQuery->ExecutorRun->standard_ExecutorRun->ExecutePlan->ExecProcNode->ExecProcNodeFirst->ExecModifyTable->ExecInsert->heap_insert
  *	heap_insert		- insert tuple into a heap
  *
  * The new tuple is stamped with current transaction ID and the specified
@@ -2392,15 +2392,25 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
  * TID where the tuple was stored.  But note that any toasting of fields
  * within the tuple data is NOT reflected into *tup.
  */
+/*
+输入：
+    relation-数据表结构体
+    tup-Heap Tuple数据（包括头部数据等），亦即数据行
+    cid-命令ID（顺序）
+    options-选项
+    bistate-BulkInsert状态
+输出：
+    Oid-数据表Oid
+*/
 Oid
 heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 			int options, BulkInsertState bistate)
 {
-	TransactionId xid = GetCurrentTransactionId();
-	HeapTuple	heaptup;
-	Buffer		buffer;
-	Buffer		vmbuffer = InvalidBuffer;
-	bool		all_visible_cleared = false;
+	TransactionId xid = GetCurrentTransactionId(); // 事务id
+	HeapTuple	heaptup; // Heap Tuple数据，亦即数据行
+	Buffer		buffer; // 数据缓存块
+	Buffer		vmbuffer = InvalidBuffer; // vm缓冲块
+	bool		all_visible_cleared = false; // 标记
 
 	/*
 	 * Fill in tuple header fields, assign an OID, and toast the tuple if
@@ -2409,12 +2419,14 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	 * Note: below this point, heaptup is the data we actually intend to store
 	 * into the relation; tup is the caller's original untoasted data.
 	 */
+	// 插入前准备工作，比如设置t_infomask标记等
 	heaptup = heap_prepare_insert(relation, tup, xid, cid, options);
 
 	/*
 	 * Find buffer to insert this tuple into.  If the page is all visible,
 	 * this will also pin the requisite visibility map page.
 	 */
+	// 获取相应的buffer
 	buffer = RelationGetBufferForTuple(relation, heaptup->t_len,
 									   InvalidBuffer, options, bistate,
 									   &vmbuffer, NULL);
@@ -2434,16 +2446,21 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	 * lock "gaps" as index page locks do.  So we don't need to specify a
 	 * buffer when making the call, which makes for a faster check.
 	 */
+	// 检查序列化是否冲突
 	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
 
 	/* NO EREPORT(ERROR) from here till changes are logged */
+	// 开始，变量+1
 	START_CRIT_SECTION();
 
+	// 插入数据
 	RelationPutHeapTuple(relation, buffer, heaptup,
 						 (options & HEAP_INSERT_SPECULATIVE) != 0);
 
+	// 如Page is All Visible
 	if (PageIsAllVisible(BufferGetPage(buffer)))
 	{
+		// 复位
 		all_visible_cleared = true;
 		PageClearAllVisible(BufferGetPage(buffer));
 		visibilitymap_clear(relation,
@@ -2461,10 +2478,10 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	 *
 	 * If you do add PageSetPrunable here, add it in heap_xlog_insert too.
 	 */
-
+	// 设置缓冲块为脏块
 	MarkBufferDirty(buffer);
 
-	/* XLOG stuff */
+	/* XLOG stuff */ // 记录日志
 	if (!(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation))
 	{
 		xl_heap_insert xlrec;
@@ -2541,6 +2558,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 	END_CRIT_SECTION();
 
+	// 解锁Buffer，包括vm buffer
 	UnlockReleaseBuffer(buffer);
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
@@ -2551,9 +2569,11 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	 * the heaptup data structure is all in local memory, not in the shared
 	 * buffer.
 	 */
+	// 缓存操作后变“无效”的Tuple
 	CacheInvalidateHeapTuple(relation, heaptup, NULL);
 
 	/* Note: speculative insertions are counted too, even if aborted later */
+	// 更新统计信息
 	pgstat_count_heap_insert(relation, 1);
 
 	/*
@@ -2586,11 +2606,13 @@ heap_prepare_insert(Relation relation, HeapTuple tup, TransactionId xid,
 	 * combo CID, so it might be possible to relax this restriction, but not
 	 * without more thought and testing.
 	 */
+	// 暂不支持并行操作
 	if (IsInParallelMode())
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 				 errmsg("cannot insert tuples during a parallel operation")));
 
+	// 设置Oid
 	if (relation->rd_rel->relhasoids)
 	{
 #ifdef NOT_USED
@@ -2615,14 +2637,17 @@ heap_prepare_insert(Relation relation, HeapTuple tup, TransactionId xid,
 		Assert(!(tup->t_data->t_infomask & HEAP_HASOID));
 	}
 
-	tup->t_data->t_infomask &= ~(HEAP_XACT_MASK);
-	tup->t_data->t_infomask2 &= ~(HEAP2_XACT_MASK);
-	tup->t_data->t_infomask |= HEAP_XMAX_INVALID;
-	HeapTupleHeaderSetXmin(tup->t_data, xid);
-	if (options & HEAP_INSERT_FROZEN)
+	// 设置标记位t_infomask/t_infomask2
+	tup->t_data->t_infomask &= ~(HEAP_XACT_MASK); // HEAP_XACT_MASK=0xFFF0，取反
+	tup->t_data->t_infomask2 &= ~(HEAP2_XACT_MASK); // HEAP2_XACT_MASK=0xE000，取反
+	tup->t_data->t_infomask |= HEAP_XMAX_INVALID; // 插入数据，XMAX设置为invalid
+	HeapTupleHeaderSetXmin(tup->t_data, xid); // 设置xmin为当前事务id
+	if (options & HEAP_INSERT_FROZEN) // 冻结型插入（在事务id回卷时发生）
 		HeapTupleHeaderSetXminFrozen(tup->t_data);
 
+	// 设置cid
 	HeapTupleHeaderSetCmin(tup->t_data, cid);
+	// 设置xmax=0
 	HeapTupleHeaderSetXmax(tup->t_data, 0); /* for cleanliness */
 	tup->t_tableOid = RelationGetRelid(relation);
 

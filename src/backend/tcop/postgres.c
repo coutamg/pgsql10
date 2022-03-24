@@ -325,6 +325,18 @@ SocketBackend(StringInfo inBuf)
 	 */
 	HOLD_CANCEL_INTERRUPTS();
 	pq_startmsgread();
+	/*
+	#5  0x00000000006da372 in pq_getbyte () at pqcomm.c:1006
+	#6  0x00000000008229bb in SocketBackend (inBuf=0x7ffe86b0f610) at postgres.c:328
+	#7  0x0000000000822e8c in ReadCommand (inBuf=0x7ffe86b0f610) at postgres.c:501
+	#8  0x00000000008276b1 in PostgresMain (argc=1, argv=0x2d86190, dbname=0x2d86078 "test", username=0x2d5b9a8 "zq") at postgres.c:4032
+	#9  0x000000000079aa2b in BackendRun (port=0x2d817f0) at postmaster.c:4357
+	#10 0x000000000079a1cc in BackendStartup (port=0x2d817f0) at postmaster.c:4029
+	#11 0x0000000000796b8e in ServerLoop () at postmaster.c:1753
+	#12 0x0000000000796211 in PostmasterMain (argc=3, argv=0x2d59820) at postmaster.c:1361
+	#13 0x00000000006de840 in main (argc=3, argv=0x2d59820) at main.c:228
+
+	*/
 	qtype = pq_getbyte();
 
 	if (qtype == EOF)			/* frontend disconnected */
@@ -356,6 +368,7 @@ SocketBackend(StringInfo inBuf)
 	 * This also gives us a place to set the doing_extended_query_message flag
 	 * as soon as possible.
 	 */
+	printf("ddd test SocketBackend type: %d\n", qtype);
 	switch (qtype)
 	{
 		case 'Q':				/* simple query */
@@ -882,7 +895,7 @@ exec_simple_query(const char *query_string)
 	List	   *parsetree_list;
 	ListCell   *parsetree_item;
 	bool		save_log_statement_stats = log_statement_stats;
-	bool		was_logged = false;
+	bool		was_logged = false;/*  */
 	bool		isTopLevel;
 	char		msec_str[32];
 
@@ -4029,7 +4042,7 @@ PostgresMain(int argc, char *argv[],
 		/*
 		 * (3) read a command (loop blocks here)
 		 */
-		firstchar = ReadCommand(&input_message);
+		firstchar = ReadCommand(&input_message); // 解析 command 命令
 
 		/*
 		 * (4) disable async signal conditions again.
@@ -4077,7 +4090,7 @@ PostgresMain(int argc, char *argv[],
 
 					/* Set statement_timestamp() */
 					SetCurrentStatementStartTimestamp();
-
+					// insert 也走这里
 					query_string = pq_getmsgstring(&input_message);
 					pq_getmsgend(&input_message);
 

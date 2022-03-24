@@ -1035,6 +1035,23 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
  * epoll_event struct contain a pointer to our events, making association
  * easy.
  */
+/*
+#1  0x00000000007fc9dc in WaitEventSetWaitBlock (set=0x2d5a428, cur_timeout=-1, occurred_events=0x7ffe86b0f400, nevents=1) at latch.c:1048
+#2  0x00000000007fc8b5 in WaitEventSetWait (set=0x2d5a428, timeout=-1, occurred_events=0x7ffe86b0f400, nevents=1, wait_event_info=100663296)
+    at latch.c:1000
+#3  0x00000000006cdf2c in secure_read (port=0x2d817f0, ptr=0xe26360 <PqRecvBuffer>, len=8192) at be-secure.c:166
+#4  0x00000000006da2d3 in pq_recvbuf () at pqcomm.c:963
+#5  0x00000000006da372 in pq_getbyte () at pqcomm.c:1006
+#6  0x00000000008229bb in SocketBackend (inBuf=0x7ffe86b0f610) at postgres.c:328
+#7  0x0000000000822e8c in ReadCommand (inBuf=0x7ffe86b0f610) at postgres.c:501
+#8  0x00000000008276b1 in PostgresMain (argc=1, argv=0x2d86190, dbname=0x2d86078 "test", username=0x2d5b9a8 "zq") at postgres.c:4032
+#9  0x000000000079aa2b in BackendRun (port=0x2d817f0) at postmaster.c:4357
+#10 0x000000000079a1cc in BackendStartup (port=0x2d817f0) at postmaster.c:4029
+#11 0x0000000000796b8e in ServerLoop () at postmaster.c:1753
+#12 0x0000000000796211 in PostmasterMain (argc=3, argv=0x2d59820) at postmaster.c:1361
+#13 0x00000000006de840 in main (argc=3, argv=0x2d59820) at main.c:228
+
+*/
 static inline int
 WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 					  WaitEvent *occurred_events, int nevents)

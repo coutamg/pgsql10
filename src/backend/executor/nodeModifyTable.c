@@ -238,7 +238,7 @@ ExecCheckTIDVisible(EState *estate,
 	ExecCheckHeapTupleVisible(estate, &tuple, buffer);
 	ReleaseBuffer(buffer);
 }
-
+// main->PostmasterMain->ServerLoop->BackendStartup->BackendRun->PostgresMain->exec_simple_query->PortalRun->PortalRunMulti->ProcessQuery->ExecutorRun->standard_ExecutorRun->ExecutePlan->ExecProcNode->ExecProcNodeFirst->ExecModifyTable->ExecInsert
 /* ----------------------------------------------------------------
  *		ExecInsert
  *
@@ -1544,7 +1544,7 @@ ExecSetupTransitionCaptureState(ModifyTableState *mtstate, EState *estate)
 				mtstate->mt_transition_tupconv_maps[0];
 	}
 }
-
+// main->PostmasterMain->ServerLoop->BackendStartup->BackendRun->PostgresMain->exec_simple_query->PortalRun->PortalRunMulti->ProcessQuery->ExecutorRun->standard_ExecutorRun->ExecutePlan->ExecProcNode->ExecProcNodeFirst->ExecModifyTable
 /* ----------------------------------------------------------------
  *	   ExecModifyTable
  *

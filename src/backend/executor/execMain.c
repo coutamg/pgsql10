@@ -1658,7 +1658,7 @@ ExecEndPlan(PlanState *planstate, EState *estate)
 			heap_close(erm->relation, NoLock);
 	}
 }
-
+// main->PostmasterMain->ServerLoop->BackendStartup->BackendRun->PostgresMain->exec_simple_query->PortalRun->PortalRunMulti->ProcessQuery->ExecutorRun->standard_ExecutorRun->ExecutePlan
 /* ----------------------------------------------------------------
  *		ExecutePlan
  *

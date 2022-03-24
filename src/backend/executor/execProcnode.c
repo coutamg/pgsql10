@@ -401,7 +401,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 }
 
 
-/*
+/* main->PostmasterMain->ServerLoop->BackendStartup->BackendRun->PostgresMain->exec_simple_query->PortalRun->PortalRunMulti->ProcessQuery->ExecutorRun->standard_ExecutorRun->ExecutePlan->ExecProcNode->ExecProcNodeFirst
  * ExecProcNode wrapper that performs some one-time checks, before calling
  * the relevant node method (possibly via an instrumentation wrapper).
  */

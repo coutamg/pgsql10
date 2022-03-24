@@ -115,8 +115,8 @@ FreeQueryDesc(QueryDesc *qdesc)
 	pfree(qdesc);
 }
 
-
-/*
+// insert into score values(4, '麻子2');
+/* main -> PostmasterMain -> ServerLoop -> BackendStartup -> BackendRun -> PostgresMain -> PortalRun -> PortalRunMulti -> processQuery
  * ProcessQuery
  *		Execute a single plannable query within a PORTAL_MULTI_QUERY,
  *		PORTAL_ONE_RETURNING, or PORTAL_ONE_MOD_WITH portal

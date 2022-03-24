@@ -84,8 +84,9 @@ ReadBufferBI(Relation relation, BlockNumber targetBlock,
 
 	/* If not bulk-insert, exactly like ReadBuffer */
 	if (!bistate)
-		return ReadBuffer(relation, targetBlock);
+		return ReadBuffer(relation, targetBlock); // 非BulkInsert模式，使用常规方法获取
 
+	// 以下为BI模式
 	/* If we have the desired block already pinned, re-pin and return it */
 	if (bistate->current_buf != InvalidBuffer)
 	{
@@ -293,24 +294,51 @@ RelationAddExtraBlocks(Relation relation, BulkInsertState bistate)
  *	ereport(ERROR) is allowed here, so this routine *must* be called
  *	before any (unlogged) changes are made in buffer pool.
  */
+/*
+输入：
+    relation-数据表
+    len-需要的空间大小
+    otherBuffer-用于update场景，上一次pinned的buffer
+    options-处理选项
+    bistate-BulkInsert标记
+    vmbuffer-第1个vm(visibilitymap)
+    vmbuffer_other-用于update场景，上一次pinned的buffer对应的vm(visibilitymap)
+    注意:
+    otherBuffer这个参数让人觉得困惑，原因是PG的机制使然
+    Update时，不是原地更新，而是原数据保留（更新xmax），新数据插入
+    原数据&新数据如果在不同Block中，锁定Block的时候可能会出现Deadlock
+    举个例子：Session A更新表T的第一行，第一行在Block 0中，新数据存储在Block 2中
+              Session B更新表T的第二行，第二行在Block 0中，新数据存储在Block 2中
+              Block 0/2均要锁定才能完整实现Update操作：
+              如果Session A先锁定了Block 2，Session B先锁定了Block 0，
+              然后Session A尝试锁定Block 0，Session B尝试锁定Block 2，这时候就会出现死锁
+              为了避免这种情况，PG规定锁定时，同一个Relation，按Block的编号顺序锁定，
+              如需要锁定0和2，那必须先锁定Block 0，再锁定2
+输出：
+    为Tuple分配的Buffer
+附：
+Pinned buffers：means buffers are currently being used,it should not be flushed out.
+*/
 Buffer
 RelationGetBufferForTuple(Relation relation, Size len,
 						  Buffer otherBuffer, int options,
 						  BulkInsertState bistate,
 						  Buffer *vmbuffer, Buffer *vmbuffer_other)
 {
+	// 是否使用FSM寻找空闲空间
 	bool		use_fsm = !(options & HEAP_INSERT_SKIP_FSM);
 	Buffer		buffer = InvalidBuffer;
 	Page		page;
-	Size		pageFreeSpace = 0,
-				saveFreeSpace = 0;
-	BlockNumber targetBlock,
-				otherBlock;
-	bool		needLock;
+	Size		pageFreeSpace = 0, // page空闲空间
+				saveFreeSpace = 0; // page需要预留的空间
+	BlockNumber targetBlock,	// 目标Block
+				otherBlock;		// 上一次pinned的buffer对应的Blocks
+	bool		needLock;		// 是否需要上锁
 
-	len = MAXALIGN(len);		/* be conservative */
+	len = MAXALIGN(len);		/* be conservative */ // 大小对齐
 
 	/* Bulk insert is not supported for updates, only inserts. */
+	// otherBuffer有效，说明是update操作，不支持bi(BulkInsert)
 	Assert(otherBuffer == InvalidBuffer || !bistate);
 
 	/*
@@ -323,9 +351,11 @@ RelationGetBufferForTuple(Relation relation, Size len,
 						len, MaxHeapTupleSize)));
 
 	/* Compute desired extra freespace due to fillfactor option */
+	// 获取预留空间 BLOCK 中默认会有一个 fillfactor, 保留部分空间为 update
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
 												   HEAP_DEFAULT_FILLFACTOR);
 
+	// update操作,获取上次pinned buffer对应的Block
 	if (otherBuffer != InvalidBuffer)
 		otherBlock = BufferGetBlockNumber(otherBuffer);
 	else
@@ -347,20 +377,23 @@ RelationGetBufferForTuple(Relation relation, Size len,
 	if (len + saveFreeSpace > MaxHeapTupleSize)
 	{
 		/* can't fit, don't bother asking FSM */
+		// 如果需要的大小+预留空间大于可容纳的最大Tuple大小，不使用FSM，扩展后再尝试
 		targetBlock = InvalidBlockNumber;
 		use_fsm = false;
 	}
-	else if (bistate && bistate->current_buf != InvalidBuffer)
+	else if (bistate && bistate->current_buf != InvalidBuffer) // BulkInsert模式
 		targetBlock = BufferGetBlockNumber(bistate->current_buf);
 	else
-		targetBlock = RelationGetTargetBlock(relation);
+		targetBlock = RelationGetTargetBlock(relation); // 普通Insert模式
 
+	// 还没有找到合适的BlockNumber，需要使用FSM
 	if (targetBlock == InvalidBlockNumber && use_fsm)
 	{
 		/*
 		 * We have no cached target page, so ask the FSM for an initial
 		 * target.
 		 */
+		// 使用FSM申请空闲空间=len + saveFreeSpace的块
 		targetBlock = GetPageWithFreeSpace(relation, len + saveFreeSpace);
 
 		/*
@@ -368,6 +401,7 @@ RelationGetBufferForTuple(Relation relation, Size len,
 		 * give up and extend.  This avoids one-tuple-per-page syndrome during
 		 * bootstrapping or in a recently-started system.
 		 */
+		// 申请不到，使用最后一个块，否则扩展或者放弃
 		if (targetBlock == InvalidBlockNumber)
 		{
 			BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
@@ -378,7 +412,7 @@ RelationGetBufferForTuple(Relation relation, Size len,
 	}
 
 loop:
-	while (targetBlock != InvalidBlockNumber)
+	while (targetBlock != InvalidBlockNumber) // 已成功获取插入数据的块号
 	{
 		/*
 		 * Read and exclusive-lock the target block, as well as the other
@@ -393,15 +427,17 @@ loop:
 		 * Checking without the lock creates a risk of getting the wrong
 		 * answer, so we'll have to recheck after acquiring the lock.
 		 */
+		// 非Update操作
 		if (otherBuffer == InvalidBuffer)
 		{
 			/* easy case */
-			buffer = ReadBufferBI(relation, targetBlock, bistate);
+			buffer = ReadBufferBI(relation, targetBlock, bistate); // 获取Buffer
+			// 如果Page全局可见，那么把Page Pin在内存中（Pin的意思是固定/保留）
 			if (PageIsAllVisible(BufferGetPage(buffer)))
 				visibilitymap_pin(relation, targetBlock, vmbuffer);
-			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE); // 锁定buffer
 		}
-		else if (otherBlock == targetBlock)
+		else if (otherBlock == targetBlock) // Update操作，新记录跟原记录在同一个Block中
 		{
 			/* also easy case */
 			buffer = otherBuffer;
@@ -409,22 +445,22 @@ loop:
 				visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		}
-		else if (otherBlock < targetBlock)
+		else if (otherBlock < targetBlock) // Update操作，原记录所在的Block < 新记录的Block
 		{
 			/* lock other buffer first */
 			buffer = ReadBuffer(relation, targetBlock);
 			if (PageIsAllVisible(BufferGetPage(buffer)))
 				visibilitymap_pin(relation, targetBlock, vmbuffer);
-			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
+			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE); // 优先锁定BlockNumber小的那个
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		}
-		else
+		else // Update操作，原记录所在的Block > 新记录的Block
 		{
 			/* lock target buffer first */
 			buffer = ReadBuffer(relation, targetBlock);
 			if (PageIsAllVisible(BufferGetPage(buffer)))
 				visibilitymap_pin(relation, targetBlock, vmbuffer);
-			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE); // 优先锁定BlockNumber小的那个
 			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 		}
 
@@ -452,11 +488,11 @@ loop:
 		if (otherBuffer == InvalidBuffer || buffer <= otherBuffer)
 			GetVisibilityMapPins(relation, buffer, otherBuffer,
 								 targetBlock, otherBlock, vmbuffer,
-								 vmbuffer_other);
+								 vmbuffer_other); // Pin VM在内存中
 		else
 			GetVisibilityMapPins(relation, otherBuffer, buffer,
 								 otherBlock, targetBlock, vmbuffer_other,
-								 vmbuffer);
+								 vmbuffer); // Pin VM在内存中
 
 		/*
 		 * Now we can check to see if there's enough free space here. If so,
@@ -464,7 +500,7 @@ loop:
 		 */
 		page = BufferGetPage(buffer);
 		pageFreeSpace = PageGetHeapFreeSpace(page);
-		if (len + saveFreeSpace <= pageFreeSpace)
+		if (len + saveFreeSpace <= pageFreeSpace) // 有足够的空间存储数据，返回此Buffer
 		{
 			/* use this page as future insert target, too */
 			RelationSetTargetBlock(relation, targetBlock);
@@ -487,19 +523,22 @@ loop:
 		}
 
 		/* Without FSM, always fall out of the loop and extend */
-		if (!use_fsm)
+		if (!use_fsm) // 不使用FSM定位空闲空间，跳出循环，执行扩展
 			break;
 
 		/*
 		 * Update FSM as to condition of this page, and ask for another page
 		 * to try.
 		 */
+		// 使用FSM获取下一个备选的Block
+        // 注意：如果全部扫描后发现没有满足条件的Block，targetBlock = InvalidBlockNumber，跳出循环
 		targetBlock = RecordAndGetPageWithFreeSpace(relation,
 													targetBlock,
 													pageFreeSpace,
 													len + saveFreeSpace);
 	}
 
+	// 没有获取满足条件的Block，扩展表
 	/*
 	 * Have to extend the relation.
 	 *
@@ -508,7 +547,7 @@ loop:
 	 * can skip locking for new or temp relations, however, since no one else
 	 * could be accessing them.
 	 */
-	needLock = !RELATION_IS_LOCAL(relation);
+	needLock = !RELATION_IS_LOCAL(relation); // 新创建的数据表或者临时表，无需Lock
 
 	/*
 	 * If we need the lock but are not able to acquire it immediately, we'll
@@ -516,7 +555,7 @@ loop:
 	 * contention on the relation extension lock.  However, this only makes
 	 * sense if we're using the FSM; otherwise, there's no point.
 	 */
-	if (needLock)
+	if (needLock) // 需要锁定
 	{
 		if (!use_fsm)
 			LockRelationForExtension(relation, ExclusiveLock);
@@ -529,6 +568,7 @@ loop:
 			 * Check if some other backend has extended a block for us while
 			 * we were waiting on the lock.
 			 */
+			// 如有其它进程扩展了数据表，那么可以成功获取满足条件的targetBlock
 			targetBlock = GetPageWithFreeSpace(relation, len + saveFreeSpace);
 
 			/*
@@ -542,6 +582,7 @@ loop:
 			}
 
 			/* Time to bulk-extend. */
+			// 其它进程没有扩展
 			RelationAddExtraBlocks(relation, bistate);
 		}
 	}
@@ -555,18 +596,21 @@ loop:
 	 * it worth keeping an accurate file length in shared memory someplace,
 	 * rather than relying on the kernel to do it for us?
 	 */
+	// 扩展表后，New Page
 	buffer = ReadBufferBI(relation, P_NEW, bistate);
 
 	/*
 	 * We can be certain that locking the otherBuffer first is OK, since it
 	 * must have a lower page number.
 	 */
+	// otherBuffer的顺序一定在扩展的Block之后，Lock it
 	if (otherBuffer != InvalidBuffer)
 		LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 
 	/*
 	 * Now acquire lock on the new page.
 	 */
+	// 锁定New Page
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 	/*
@@ -575,6 +619,7 @@ loop:
 	 * we have buffer lock on the new page, or we risk a race condition
 	 * against vacuumlazy.c --- see comments therein.
 	 */
+	// 释放扩展锁
 	if (needLock)
 		UnlockRelationForExtension(relation, ExclusiveLock);
 
@@ -583,15 +628,19 @@ loop:
 	 * is empty (this should never happen, but if it does we don't want to
 	 * risk wiping out valid data).
 	 */
+	// 获取相应的Page
 	page = BufferGetPage(buffer);
 
+	// 不是New Page，那一定某个地方搞错了！
 	if (!PageIsNew(page))
 		elog(ERROR, "page %u of relation \"%s\" should be empty but is not",
 			 BufferGetBlockNumber(buffer),
 			 RelationGetRelationName(relation));
 
+	// 初始化New Page
 	PageInit(page, BufferGetPageSize(buffer), 0);
 
+	// New Page也满足不了要求的大小，报错
 	if (len > PageGetHeapFreeSpace(page))
 	{
 		/* We should not get here given the test at the top */
@@ -607,6 +656,7 @@ loop:
 	 * current backend to make more insertions or not, which is probably a
 	 * good bet most of the time.  So for now, don't add it to FSM yet.
 	 */
+	// 终于找到了可用于存储数据的Block
 	RelationSetTargetBlock(relation, BufferGetBlockNumber(buffer));
 
 	return buffer;
