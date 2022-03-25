@@ -94,6 +94,10 @@
 #endif
 
 /*
+VFD 是对物理文件进行操作
+*/
+
+/*
  * We must leave some file descriptors free for system(), the dynamic loader,
  * and other code that tries to open files without consulting fd.c.  This
  * is the number left free.  (While we can be pretty sure we won't get
@@ -175,17 +179,27 @@ int			max_safe_fds = 32;	/* default if not changed */
 
 typedef struct vfd
 {
+	// vfd 对应的真实物理文件 fd, 若没有打开的文件，则为 VFD_CLOSED=-1
 	int			fd;				/* current FD, or VFD_CLOSED if none */
+	// 虚拟文件描述符标记：第0位为1：FD_DIRTY 文件内容修改过，没写回磁盘，关闭文件时要落盘
+	//                  第1位为1: FD_TEMPORARY 文件关闭时要删除
 	unsigned short fdstate;		/* bitflags for VFD's state */
 	ResourceOwner resowner;		/* owner, for automatic cleanup */
+	// 下一个空闲的 vfd，vfd数组中的下标
 	File		nextFree;		/* link to next free VFD, if in freelist */
+	// 比该vfd最近更常用的vfd
 	File		lruMoreRecently;	/* doubly linked recency-of-use list */
+	// 比该vfd最近更不常用的vfd
 	File		lruLessRecently;
+	// 该 vfd 当前读写指针的位置
 	off_t		seekPos;		/* current logical file position, or -1 */
 	off_t		fileSize;		/* current size of file (0 if not temporary) */
+	// 该 vfd 对应文件的 name, 空的 vfd 该字段为空值
 	char	   *fileName;		/* name of file, or NULL for unused VFD */
 	/* NB: fileName is malloc'd, and must be free'd when closing the VFD */
+	// 文件打开是的标志，包括只读，只写，读写等
 	int			fileFlags;		/* open(2) flags for (re)opening the file */
+	// 文件创建时指定的模式
 	int			fileMode;		/* mode to pass to open(2) */
 } Vfd;
 
@@ -291,6 +305,19 @@ static int	nextTempTableSpace = 0;
  *
  *--------------------
  */
+
+/*
+VFD 的分配和回收流程：
+	第一次打开文件时，初始化 VfdCache 数组，设置数组大小为 32，为其中每一个 Vfd 结构分配内存
+	  空间，将 Vfd中的 fd 设置为 VFD_CLOSED，并将数组所有元素放在 FreeList 上
+
+	分配一个 VFD，即从 FreeList 头取一个 VFD, 并打开该文件，把文件相关信息写入到 VFD
+
+	若 FreeList 中没有空闲 VFD，则将 VfdCache 数组扩大一倍，新增加的 VFD 置于 FreeList 头部
+
+	关闭文件时，将该文件对应的 VFD 插入到 FreeList 头部
+*/
+
 static void Delete(File file);
 static void LruDelete(File file);
 static void Insert(File file);

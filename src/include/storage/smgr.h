@@ -69,11 +69,11 @@ typedef struct SMgrRelationData
 	 * (md_num_open_segs) and the segments themselves (md_seg_fds).
 	 */
 	int			md_num_open_segs[MAX_FORKNUM + 1];
-	struct _MdfdVec *md_seg_fds[MAX_FORKNUM + 1];
+	struct _MdfdVec *md_seg_fds[MAX_FORKNUM + 1]; // 同一个表文件的所有段，
 
 	/* if unowned, list link in list of all unowned SMgrRelations */
 	struct SMgrRelationData *next_unowned_reln;
-} SMgrRelationData;
+} SMgrRelationData; // 用来表示一个打开的表文件,所有的SMgrRelationData组成一个hash表
 
 typedef SMgrRelationData *SMgrRelation;
 

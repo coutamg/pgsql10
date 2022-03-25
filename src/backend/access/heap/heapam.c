@@ -2401,6 +2401,39 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
     bistate-BulkInsert状态
 输出：
     Oid-数据表Oid
+
+	+-------------------------------------+
+	|  PageHeaderData(20字节 page 头部数据) |
+	+-------------------------------------+
+	|       Linp1 (tuple1 的索引)          |
+	+-------------------------------------+
+	|		 ......                       |
+	+-------------------------------------+
+	|          Free Space                 |
+	+-------------------------------------+
+	|         ...... 					  |
+	+-------------------------------------+
+	|           Tuple1 (数据)              |------+
+	+-------------------------------------+      |
+	|          Special Space              |      |
+	+-------------------------------------+      |
+												 |
+	+----------+-------+-------+-----+   <-------+
+	| header   | value | value | ... |
+	+----------+-------+-------+-----+
+		\|/
+	t_cmin : 插入的 CID (command Id, 命令 ID)
+	t_cmax : 删除的 CID
+	t_xmax : 插入的 XID (Transaction Id, 事物 ID)
+	t_xmax : 删除的 XID
+	t_citd : 记录当前元组或者新元组的 tid(块内偏移量和元组长度), 这里也是 MVCC 链的 next
+	t_natts: 字段数
+	t_infomask2: 记录各种信息
+	t_infomask: 元组当前状态,如是否有 OID，是否有空属性等
+	t_hoff: 表示该元组头的大小
+	_bits[]: 用于标识元组哪些字段为空
+
+
 */
 Oid
 heap_insert(Relation relation, HeapTuple tup, CommandId cid,
@@ -2419,7 +2452,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	 * Note: below this point, heaptup is the data we actually intend to store
 	 * into the relation; tup is the caller's original untoasted data.
 	 */
-	// 插入前准备工作，比如设置t_infomask标记等
+	// 插入前准备工作，比如设置t_infomask标记等, 事物ID等
 	heaptup = heap_prepare_insert(relation, tup, xid, cid, options);
 
 	/*

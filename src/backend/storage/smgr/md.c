@@ -105,11 +105,12 @@
  *
  *	The entire MdfdVec array is palloc'd in the MdCxt memory context.
  */
-
+// 磁盘管理器，不是直接对磁盘上的文件进行操作，而是通过 VFD 机制来进行文件操作
 typedef struct _MdfdVec
 {
-	File		mdfd_vfd;		/* fd number in fd.c's pool */
-	BlockNumber mdfd_segno;		/* segment number, from 0 */
+	File		mdfd_vfd;		/* fd number in fd.c's pool 该文件对应的 VFD */
+	BlockNumber mdfd_segno;		/* segment number, from 0 表文件较大时被切成多个文件(段)
+								   ，该字段表示当前文件是表文件第几段*/ 
 } MdfdVec;
 
 static MemoryContext MdCxt;		/* context for all MdfdVec objects */

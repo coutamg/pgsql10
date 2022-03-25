@@ -319,6 +319,9 @@ RelationAddExtraBlocks(Relation relation, BulkInsertState bistate)
 附：
 Pinned buffers：means buffers are currently being used,it should not be flushed out.
 */
+/* pg 的数据是按最小的 block(8k)来存储，一个 block 在这里对应一个 page，一行数据对应一个 tup,
+   这里可以参考 http://blog.itpub.net/31493717/viewspace-2220464/
+*/
 Buffer
 RelationGetBufferForTuple(Relation relation, Size len,
 						  Buffer otherBuffer, int options,
@@ -327,7 +330,7 @@ RelationGetBufferForTuple(Relation relation, Size len,
 {
 	// 是否使用FSM寻找空闲空间
 	bool		use_fsm = !(options & HEAP_INSERT_SKIP_FSM);
-	Buffer		buffer = InvalidBuffer;
+	Buffer		buffer = InvalidBuffer; // tup 的 index
 	Page		page;
 	Size		pageFreeSpace = 0, // page空闲空间
 				saveFreeSpace = 0; // page需要预留的空间
@@ -384,7 +387,7 @@ RelationGetBufferForTuple(Relation relation, Size len,
 	else if (bistate && bistate->current_buf != InvalidBuffer) // BulkInsert模式
 		targetBlock = BufferGetBlockNumber(bistate->current_buf);
 	else
-		targetBlock = RelationGetTargetBlock(relation); // 普通Insert模式
+		targetBlock = RelationGetTargetBlock(relation); // 普通Insert模式, 这里和 smgr 联系上
 
 	// 还没有找到合适的BlockNumber，需要使用FSM
 	if (targetBlock == InvalidBlockNumber && use_fsm)

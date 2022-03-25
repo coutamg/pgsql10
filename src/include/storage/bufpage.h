@@ -151,13 +151,19 @@ typedef struct PageHeaderData
 								 * record for last change to this page */
 	uint16		pd_checksum;	/* checksum */
 	uint16		pd_flags;		/* flag bits, see below */
-	LocationIndex pd_lower;		/* offset to start of free space */
-	LocationIndex pd_upper;		/* offset to end of free space */
-	LocationIndex pd_special;	/* offset to start of special space */
+	LocationIndex pd_lower;		/* offset to start of free space */ // 空闲空间的起始地址
+	LocationIndex pd_upper;		/* offset to end of free space */ // 空闲空间的结束地址
+	LocationIndex pd_special;	/* offset to start of special space */ // sepcial 的起始地址
 	uint16		pd_pagesize_version;
 	TransactionId pd_prune_xid; /* oldest prunable XID, or zero if none */
-	ItemIdData	pd_linp[FLEXIBLE_ARRAY_MEMBER]; /* line pointer array */
+	ItemIdData	pd_linp[FLEXIBLE_ARRAY_MEMBER]; /* line pointer array */ // 用来指向数据 tup
 } PageHeaderData;
+/*
+ 上面的 pd_lower 与 pd_upper 构成了 Freespace, 新插入 block 中的 tup 对应的 linp 元素都是从
+ Freespace的头部开始分配，而数据 tup 是从其尾部开始分配
+
+ special 用于存放与索引方法相关的特定数据，special 在普通的表文件中没有使用，内容为空
+*/
 
 typedef PageHeaderData *PageHeader;
 
