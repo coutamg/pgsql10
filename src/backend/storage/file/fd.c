@@ -302,7 +302,8 @@ static int	nextTempTableSpace = 0;
  *	  ^\									| |
  *	   \\less--> MostRecentlyUsedFile	<---/ |
  *		\more---/					 \--less--/
- *
+ *    
+ * 				LRU 结构
  *--------------------
  */
 
@@ -319,9 +320,14 @@ VFD 的分配和回收流程：
 */
 
 static void Delete(File file);
+// 将 VFD 从LRU中删除，并将 VFD 对应的文件关闭掉, 若 fdstate 为 FD_DIRTY，则需要
+// 同步数据到磁盘，将该 VFD 返回 freeList 中
 static void LruDelete(File file);
 static void Insert(File file);
+// 打开一个新的 VFD，将物理文件 file 与该新的 VFD 对应上，写入到 Vfd[0] 后面
 static int	LruInsert(File file);
+// LRU 满的时候，删除 LRU 尾部VFD, 关闭物理文件。
+// 此时只是把 VFD 从 LRU 链中删除，VFD 对应的内存结构不删除，应为后面还需要该 VFD
 static bool ReleaseLruFile(void);
 static void ReleaseLruFiles(void);
 static File AllocateVfd(void);
@@ -1076,7 +1082,7 @@ Insert(File file)
 
 	DO_DB(elog(LOG, "Insert %d (%s)",
 			   file, VfdCache[file].fileName));
-	DO_DB(_dump_lru());
+	DO_DB(_dump_lru()); // 开启 debug 打印的时候会打印出 lru 插入前内容
 
 	vfdP = &VfdCache[file];
 
@@ -1085,7 +1091,7 @@ Insert(File file)
 	VfdCache[0].lruLessRecently = file;
 	VfdCache[vfdP->lruLessRecently].lruMoreRecently = file;
 
-	DO_DB(_dump_lru());
+	DO_DB(_dump_lru()); // 开启 debug 打印的时候会打印出 lru 插入后内容
 }
 
 /* returns 0 on success, -1 on re-open failure (with errno set) */

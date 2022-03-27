@@ -73,7 +73,7 @@ typedef struct SMgrRelationData
 
 	/* if unowned, list link in list of all unowned SMgrRelations */
 	struct SMgrRelationData *next_unowned_reln;
-} SMgrRelationData; // 用来表示一个打开的表文件,所有的SMgrRelationData组成一个hash表
+} SMgrRelationData; // 用来表示一个打开的表文件,所有的 SMgrRelationData 组成一个hash表
 
 typedef SMgrRelationData *SMgrRelation;
 
