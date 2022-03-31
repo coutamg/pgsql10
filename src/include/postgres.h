@@ -65,11 +65,15 @@
  * you can look at these fields!  (The reason we use memcmp is to avoid
  * having to do that just to detect equality of two TOAST pointers...)
  */
-typedef struct varatt_external
+typedef struct varatt_external // TOAST 指针
 {
+	// 原始数据(未TOAST)的大小(包含数据头部信息)
 	int32		va_rawsize;		/* Original data size (includes header) */
+	// 线外存储(TOAST过)的数据大小(不包含头部)
 	int32		va_extsize;		/* External saved size (doesn't) */
+	// 线外存储数据的 OID，也是其在 TOAST 表中的唯一标识
 	Oid			va_valueid;		/* Unique ID of value within TOAST table */
+	// TOAST 表的 OID，这个 OID 用于在 pg_class 中定位
 	Oid			va_toastrelid;	/* RelID of TOAST table containing it */
 }			varatt_external;
 

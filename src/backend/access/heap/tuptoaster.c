@@ -23,6 +23,11 @@
  *			Fetch back a given value from the "secondary" relation
  *
  *-------------------------------------------------------------------------
+ * TOAST 数据基本流程：
+ * 1. 从表的 TOAST 属性中获取 TOAST 指针 （varatt_external）
+ * 2. 通过 TOAST 指针找到 TOAST 表
+ * 3. 通过 TOAST 数据的 OID 在 TOAST 表中找到所有片段并按序号
+ *    拼接起来得到 TOAST 数据
  */
 
 #include "postgres.h"
@@ -96,6 +101,7 @@ static void init_toast_snapshot(Snapshot toast_snapshot);
  * have a short header.  Note some callers assume that if the input is an
  * EXTERNAL datum, the result will be a pfree'able chunk.
  * ----------
+ * 获取 TOAST 数据，获取的数据可能依然被 TOAST 过
  */
 struct varlena *
 heap_tuple_fetch_attr(struct varlena *attr)
@@ -107,7 +113,7 @@ heap_tuple_fetch_attr(struct varlena *attr)
 		/*
 		 * This is an external stored plain value
 		 */
-		result = toast_fetch_datum(attr);
+		result = toast_fetch_datum(attr);// 获取线外数据
 	}
 	else if (VARATT_IS_EXTERNAL_INDIRECT(attr))
 	{
@@ -168,15 +174,16 @@ heap_tuple_fetch_attr(struct varlena *attr)
  * datum, the result will be a pfree'able chunk.
  * ----------
  */
+// 从 toast 中读取数据
 struct varlena *
 heap_tuple_untoast_attr(struct varlena *attr)
 {
-	if (VARATT_IS_EXTERNAL_ONDISK(attr))
+	if (VARATT_IS_EXTERNAL_ONDISK(attr)) // 数据是线外存储的
 	{
 		/*
 		 * This is an externally stored datum --- fetch it back from there
 		 */
-		attr = toast_fetch_datum(attr);
+		attr = toast_fetch_datum(attr);// 从 toast 表中获取该数据的片段重组数据
 		/* If it's compressed, decompress it */
 		if (VARATT_IS_COMPRESSED(attr))
 		{
@@ -200,7 +207,7 @@ heap_tuple_untoast_attr(struct varlena *attr)
 		Assert(!VARATT_IS_EXTERNAL_INDIRECT(attr));
 
 		/* recurse in case value is still extended in some other way */
-		attr = heap_tuple_untoast_attr(attr);
+		attr = heap_tuple_untoast_attr(attr);// 递归获取
 
 		/* if it isn't, we'd better copy it */
 		if (attr == (struct varlena *) redirect.pointer)
@@ -531,6 +538,7 @@ toast_delete(Relation rel, HeapTuple oldtup, bool is_speculative)
  * NOTE: neither newtup nor oldtup will be modified.  This is a change
  * from the pre-8.1 API of this routine.
  * ----------
+ * 对元组的插入或者更新可能涉及到元组的 TOAST 处理
  */
 HeapTuple
 toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
@@ -583,6 +591,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	numAttrs = tupleDesc->natts;
 
 	Assert(numAttrs <= MaxHeapAttributeNumber);
+	// 从新版本元组中提取出属性数组(包括属性的描述和值)等信息
 	heap_deform_tuple(newtup, tupleDesc, toast_values, toast_isnull);
 	if (oldtup != NULL)
 		heap_deform_tuple(oldtup, tupleDesc, toast_oldvalues, toast_oldisnull);
@@ -604,35 +613,36 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	memset(toast_free, 0, numAttrs * sizeof(bool));
 	memset(toast_delold, 0, numAttrs * sizeof(bool));
 
+	// 检查每一个属性
 	for (i = 0; i < numAttrs; i++)
 	{
 		struct varlena *old_value;
 		struct varlena *new_value;
 
-		if (oldtup != NULL)
+		if (oldtup != NULL)// 有旧值
 		{
 			/*
 			 * For UPDATE get the old and new values of this attribute
 			 */
-			old_value = (struct varlena *) DatumGetPointer(toast_oldvalues[i]);
-			new_value = (struct varlena *) DatumGetPointer(toast_values[i]);
+			old_value = (struct varlena *) DatumGetPointer(toast_oldvalues[i]);// 属性对应的旧值
+			new_value = (struct varlena *) DatumGetPointer(toast_values[i]); // 属性对应的新值
 
 			/*
 			 * If the old value is stored on disk, check if it has changed so
 			 * we have to delete it later.
 			 */
 			if (att[i]->attlen == -1 && !toast_oldisnull[i] &&
-				VARATT_IS_EXTERNAL_ONDISK(old_value))
+				VARATT_IS_EXTERNAL_ONDISK(old_value))// 这里判断旧值是否进行了线外存储
 			{
 				if (toast_isnull[i] || !VARATT_IS_EXTERNAL_ONDISK(new_value) ||
 					memcmp((char *) old_value, (char *) new_value,
-						   VARSIZE_EXTERNAL(old_value)) != 0)
+						   VARSIZE_EXTERNAL(old_value)) != 0) // 新值旧值不同，且旧值是线外存储
 				{
 					/*
 					 * The old external stored value isn't needed any more
 					 * after the update
 					 */
-					toast_delold[i] = true;
+					toast_delold[i] = true; // 旧值标记未删除
 					need_delold = true;
 				}
 				else
@@ -642,7 +652,8 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 					 * the original reference to the old value in the new
 					 * tuple.
 					 */
-					toast_action[i] = 'p';
+					toast_action[i] = 'p';// 新的update不改变旧值，在新的 tuple 中，重用原有的线外存储，
+										  // 即新旧指向同一个线外存储
 					continue;
 				}
 			}
@@ -730,12 +741,13 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		hoff += sizeof(Oid);
 	hoff = MAXALIGN(hoff);
 	/* now convert to a limit on the tuple data size */
-	maxDataLen = TOAST_TUPLE_TARGET - hoff;
+	maxDataLen = TOAST_TUPLE_TARGET - hoff; // TOAST_TUPLE_TARGET block size 的 1/4 也就是 toast 的阈值
 
 	/*
 	 * Look for attributes with attstorage 'x' to compress.  Also find large
 	 * attributes with attstorage 'x' or 'e', and store them external.
 	 */
+	// 某个属性的值大于  maxDataLen 时，需要处理
 	while (heap_compute_data_size(tupleDesc,
 								  toast_values, toast_isnull) > maxDataLen)
 	{
@@ -758,43 +770,45 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 			if (att[i]->attstorage != 'x' && att[i]->attstorage != 'e')
 				continue;
 			if (toast_sizes[i] > biggest_size)
-			{
+			{ // 找到一个 tuple 中 尺寸最大且没进行过 TOAST 处理的属性
 				biggest_attno = i;
 				biggest_size = toast_sizes[i];
 			}
 		}
 
-		if (biggest_attno < 0)
+		if (biggest_attno < 0) // 没有最大的属性，直接退出
 			break;
 
 		/*
 		 * Attempt to compress it inline, if it has attstorage 'x'
 		 */
-		i = biggest_attno;
-		if (att[i]->attstorage == 'x')
+		i = biggest_attno; // 最大的属性
+		if (att[i]->attstorage == 'x') // 最大属性的 storage 策略为 x (允许同时采用压缩和线外存储)
 		{
 			old_value = toast_values[i];
 			new_value = toast_compress_datum(old_value);
 
-			if (DatumGetPointer(new_value) != NULL)
+			// DatumGetPointer 将 new_value 强制转换为 char*
+			// new_value 存在
+			if (DatumGetPointer(new_value) != NULL) 
 			{
 				/* successful compression */
-				if (toast_free[i])
+				if (toast_free[i]) // 最大属性的的值标记为 free
 					pfree(DatumGetPointer(old_value));
-				toast_values[i] = new_value;
+				toast_values[i] = new_value; // 取压缩后的值
 				toast_free[i] = true;
 				toast_sizes[i] = VARSIZE(DatumGetPointer(toast_values[i]));
 				need_change = true;
 				need_free = true;
 			}
 			else
-			{
+			{	// 压缩失败后，忽略压缩
 				/* incompressible, ignore on subsequent compression passes */
 				toast_action[i] = 'x';
 			}
 		}
 		else
-		{
+		{   // 存储策略为 e 表示 允许线外存储，但不做压缩
 			/* has attstorage 'e', ignore on subsequent compression passes */
 			toast_action[i] = 'x';
 		}
@@ -807,11 +821,12 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		 *
 		 * XXX maybe the threshold should be less than maxDataLen?
 		 */
-		if (toast_sizes[i] > maxDataLen &&
+		if (toast_sizes[i] > maxDataLen && // 检查上面压缩后的属性值是否大于 block size 的 1/4
 			rel->rd_rel->reltoastrelid != InvalidOid)
 		{
 			old_value = toast_values[i];
-			toast_action[i] = 'p';
+			toast_action[i] = 'p'; // 忽略压缩和线外存储
+			// 存储到线外
 			toast_values[i] = toast_save_datum(rel, toast_values[i],
 											   toast_oldexternal[i], options);
 			if (toast_free[i])
@@ -826,6 +841,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	 * Second we look for attributes of attstorage 'x' or 'e' that are still
 	 * inline.  But skip this if there's no toast table to push them to.
 	 */
+	// 找到剩下的可以进行线外存储的属性，该循环会反复执行，直到本元组内属性大小小于 toast 阈值
 	while (heap_compute_data_size(tupleDesc,
 								  toast_values, toast_isnull) > maxDataLen &&
 		   rel->rd_rel->reltoastrelid != InvalidOid)
@@ -877,6 +893,8 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	 * Round 3 - this time we take attributes with storage 'm' into
 	 * compression
 	 */
+	// 找到只能线内压缩的属性，进行线内压缩，循环一处理了即允许压缩又允许线外存储
+	// 这些属性也要大于 toast 阈值才行
 	while (heap_compute_data_size(tupleDesc,
 								  toast_values, toast_isnull) > maxDataLen)
 	{
@@ -898,9 +916,9 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 				continue;
 			if (att[i]->attstorage != 'm')
 				continue;
-			if (toast_sizes[i] > biggest_size)
+			if (toast_sizes[i] > biggest_size)// toast 策略为 m
 			{
-				biggest_attno = i;
+				biggest_attno = i; // 找到最大的属性
 				biggest_size = toast_sizes[i];
 			}
 		}
@@ -940,6 +958,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	 */
 	maxDataLen = TOAST_TUPLE_TARGET_MAIN - hoff;
 
+	// 处理那些失败且超过 toast 阈值的属性，
 	while (heap_compute_data_size(tupleDesc,
 								  toast_values, toast_isnull) > maxDataLen &&
 		   rel->rd_rel->reltoastrelid != InvalidOid)
@@ -1061,7 +1080,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	/*
 	 * Delete external values from the old tuple
 	 */
-	if (need_delold)
+	if (need_delold) // 从旧元组中删除没有在新元组中重用的线外存储
 		for (i = 0; i < numAttrs; i++)
 			if (toast_delold[i])
 				toast_delete_datum(rel, toast_oldvalues[i], false);

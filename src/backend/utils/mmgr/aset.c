@@ -117,17 +117,26 @@ typedef void *AllocPointer;
  * being logically empty, because we don't attempt to detect pfree'ing the
  * last active chunk.
  */
+// 可以参考 https://zhuanlan.zhihu.com/p/350049053
 typedef struct AllocSetContext
 {
+	// 对应该内存上下文的头部信息
 	MemoryContextData header;	/* Standard memory-context fields */
 	/* Info about storage allocated in this context: */
+	// 该内存上下文中所有内存块的链表
 	AllocBlock	blocks;			/* head of list of blocks in this set */
+	// 该内存上下文中空闲内存片的数组
 	AllocChunk	freelist[ALLOCSET_NUM_FREELISTS];	/* free chunk lists */
 	/* Allocation parameters for this context: */
+	// 初始内存块的大小  initBlockSize <= nextBlockSize <= maxBlockSize
 	Size		initBlockSize;	/* initial block size */
+	// 最大内存块大小
 	Size		maxBlockSize;	/* maximum block size */
+	// 下一个要分配的内存块的大小，分配一个新的内存块是采用
 	Size		nextBlockSize;	/* next block size to allocate */
+	// 分配内存块的尺寸阈值，在分配内存块是用到,该值有效时，是为了运行是替换 ALLOC_CHUNK_LIMIT 这个宏
 	Size		allocChunkLimit;	/* effective chunk size limit */
+	// keeper 中的内存块在内存上下文重置时保留不被释放
 	AllocBlock	keeper;			/* if not NULL, keep this block over resets */
 } AllocSetContext;
 
@@ -145,7 +154,7 @@ typedef AllocSetContext *AllocSet;
  *		AllocBlockData is the header data for a block --- the usable space
  *		within the block begins at the next alignment boundary.
  */
-typedef struct AllocBlockData
+typedef struct AllocBlockData // AllocSet 管理内存中对应的 内存块
 {
 	AllocSet	aset;			/* aset that owns this block */
 	AllocBlock	prev;			/* prev block in aset's blocks list, if any */

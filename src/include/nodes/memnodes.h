@@ -53,40 +53,46 @@ typedef struct MemoryContextCounters
 
 typedef struct MemoryContextMethods
 {
-	void	   *(*alloc) (MemoryContext context, Size size);
+	void	   *(*alloc) (MemoryContext context, Size size); // 分配内存
 	/* call this free_p in case someone #define's free() */
-	void		(*free_p) (MemoryContext context, void *pointer);
-	void	   *(*realloc) (MemoryContext context, void *pointer, Size size);
-	void		(*init) (MemoryContext context);
-	void		(*reset) (MemoryContext context);
-	void		(*delete_context) (MemoryContext context);
-	Size		(*get_chunk_space) (MemoryContext context, void *pointer);
-	bool		(*is_empty) (MemoryContext context);
-	void		(*stats) (MemoryContext context, int level, bool print,
+	void		(*free_p) (MemoryContext context, void *pointer); // 释放内存
+	void	   *(*realloc) (MemoryContext context, void *pointer, Size size); // 重新分配
+	void		(*init) (MemoryContext context); // 初始化内存上下文
+	void		(*reset) (MemoryContext context); // 重置内存上下文
+	void		(*delete_context) (MemoryContext context); // 删除内存上下文
+	Size		(*get_chunk_space) (MemoryContext context, void *pointer); // 检查内存片段的大小
+	bool		(*is_empty) (MemoryContext context); // 检查内存上下文是否为空
+	void		(*stats) (MemoryContext context, int level, bool print, // 打印内存上下文状态
 						  MemoryContextCounters *totals);
 #ifdef MEMORY_CONTEXT_CHECKING
-	void		(*check) (MemoryContext context);
+	void		(*check) (MemoryContext context); // 检查所有内存片段
 #endif
 } MemoryContextMethods;
 
 
 typedef struct MemoryContextData
 {
+	// 内存节点类型
 	NodeTag		type;			/* identifies exact kind of context */
 	/* these two fields are placed here to minimize alignment wastage: */
 	bool		isReset;		/* T = no space alloced since last reset */
 	bool		allowInCritSection; /* allow palloc in critical section */
+	// 内存处理函数
 	MemoryContextMethods *methods;	/* virtual function table */
+	// 父节点指针
 	MemoryContext parent;		/* NULL if no parent (toplevel context) */
+	// 第一个孩子节点指针
 	MemoryContext firstchild;	/* head of linked list of children */
+	// 下面两个为兄弟节点
 	MemoryContext prevchild;	/* previous child of same parent */
 	MemoryContext nextchild;	/* next child of same parent */
+	// 节点名称
 	char	   *name;			/* context name (just for debugging) */
 	MemoryContextCallback *reset_cbs;	/* list of reset/delete callbacks */
 } MemoryContextData;
 
 /* utils/palloc.h contains typedef struct MemoryContextData *MemoryContext */
-
+// 全局变量 AllocSetMethods 中指定了 AllocSetContext 实现的操作函数，在 aset.c 中
 
 /*
  * MemoryContextIsValid
