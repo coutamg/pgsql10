@@ -24,11 +24,12 @@
 /* ----------------
  *		pg_database definition.  cpp turns this into
  *		typedef struct FormData_pg_database
+ * 存放当前数据集簇中数据库的信息
  * ----------------
  */
 #define DatabaseRelationId	1262
 #define DatabaseRelation_Rowtype_Id  1248
-
+/* 参考 http://www.postgres.cn/docs/10/catalog-pg-database.html */
 CATALOG(pg_database,1262) BKI_SHARED_RELATION BKI_ROWTYPE_OID(1248) BKI_SCHEMA_MACRO
 {
 	NameData	datname;		/* database name */

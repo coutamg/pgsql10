@@ -14,6 +14,9 @@
  *	  the genbki.pl script reads this file and generates .bki
  *	  information from the DATA() statements.
  *
+ * 存储有关数据类型的信息。基本类和枚举类型（标度类型）使用CREATE TYPE创建，
+ * 而域使用CREATE DOMAIN创建。数据库中的每一个表都会有一个自动创建的组合类型，
+ * 用于表示表的行结构。也可以使用CREATE TYPE AS创建组合类型
  *-------------------------------------------------------------------------
  */
 #ifndef PG_TYPE_H
@@ -34,10 +37,15 @@
 #define TypeRelationId	1247
 #define TypeRelation_Rowtype_Id  71
 
+/* 每个元组的属性如下所示： */
+/* 参考 http://www.postgres.cn/docs/10/catalog-pg-type.html */
 CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 {
+	/* 数据类型的名字 */
 	NameData	typname;		/* type name */
+	/* 包含此类型的名字空间的OID */
 	Oid			typnamespace;	/* OID of namespace containing this type */
+	/* 类型的拥有者 */
 	Oid			typowner;		/* type owner */
 
 	/*
@@ -47,6 +55,8 @@ CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 	 * "varlena" type (one that has a length word), -2 to indicate a
 	 * null-terminated C string.
 	 */
+	/* 对于一个固定尺寸的类型，typlen是该类型内部表示的字节数。对于一个变长类型， */
+	/* typlen为负值。-1表示一个“varlena”类型（具有长度字），-2表示一个以空值结尾的C字符串。 */
 	int16		typlen;
 
 	/*
@@ -57,6 +67,10 @@ CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 	 * typbyval can be false even if the length would allow pass-by-value;
 	 * this is currently true for type float4, for example.
 	 */
+	/* typbyval判断内部例程传递这个类型的数值时是通过传值还是传引用。 */
+	/* 如果typlen不是1、2或4（或者在Datum为8字节的机器上为8）， */
+	/* 因此typbyval最好是假。变长类型总是传引用。注意即使长度允许传值 */
+	/* typbyval也可以为假 */
 	bool		typbyval;
 
 	/*
@@ -65,7 +79,11 @@ CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 	 * pseudo-type, or 'r' for a range type. (Use the TYPTYPE macros below.)
 	 *
 	 * If typtype is 'c', typrelid is the OID of the class' entry in pg_class.
+	 * 	typtype可以是: b表示一个基类,c表示一个组合类型（例如一个表的行类型
+	 *  d表示一个域,e表示一个枚举类型,p表示一个伪类型,或 r表示一个范围类型
+	 *  另请参阅typrelid和typbasetype.
 	 */
+
 	char		typtype;
 
 	/*

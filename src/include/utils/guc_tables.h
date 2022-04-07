@@ -143,13 +143,17 @@ typedef struct guc_stack
 struct config_generic
 {
 	/* constant fields, must be set correctly in initial value: */
+	// 参数名
 	const char *name;			/* name of variable - MUST BE FIRST */
+	// 参数类型
 	GucContext	context;		/* context required to set the variable */
+	// 根据功能对参数分组
 	enum config_group group;	/* to help organize variables by function */
 	const char *short_desc;		/* short desc. of this variable's purpose */
 	const char *long_desc;		/* long desc. of this variable's purpose */
 	int			flags;			/* flag bits, see guc.h */
 	/* variable fields, initialized at runtime: */
+	// 参数值的数据类型：
 	enum config_type vartype;	/* type of variable (set only at startup) */
 	int			status;			/* status bits, see below */
 	GucSource	source;			/* source of the current actual value */

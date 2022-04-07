@@ -72,13 +72,22 @@ typedef struct MemoryContextMethods
 
 typedef struct MemoryContextData
 {
-	// 内存节点类型
+	// 内存节点类型，默认只有一种类型，T_AllocSetContext
 	NodeTag		type;			/* identifies exact kind of context */
 	/* these two fields are placed here to minimize alignment wastage: */
+	// True表示上次重置后没有内存申请动作发生，False表示已经发生内存申请
 	bool		isReset;		/* T = no space alloced since last reset */
+	/* 是否允许在临界区中分配内存。通常来说是不允许进行这样分配的，分配失败会导致PANIC，
+		但这可以用于调试代码，方便开发调试，这些代码不建议进入实际生成环境中。
+	*/
 	bool		allowInCritSection; /* allow palloc in critical section */
 	// 内存处理函数
 	MemoryContextMethods *methods;	/* virtual function table */
+
+	/* parent，prevchild，nextchild组成内存上下文的树形结构，方便在重置或
+		删除内存上下文时查找子节点，分别表示父节点，同一个父节点下的prev节点，
+		同一个父节点下的next节点
+	*/
 	// 父节点指针
 	MemoryContext parent;		/* NULL if no parent (toplevel context) */
 	// 第一个孩子节点指针
@@ -88,6 +97,10 @@ typedef struct MemoryContextData
 	MemoryContext nextchild;	/* next child of same parent */
 	// 节点名称
 	char	   *name;			/* context name (just for debugging) */
+	/* 允许将内存上下文用于管理更多资源，而不仅仅是普通的palloc分配的内存。 
+	   这是通过为内存上下文注册“重置回调函数”来完成的。 在下一次重置或删除上下文之前，
+	   将调用一次此类函数。 它可以用来放弃在某种意义上与上下文中分配的对象相关联的资源
+	*/
 	MemoryContextCallback *reset_cbs;	/* list of reset/delete callbacks */
 } MemoryContextData;
 

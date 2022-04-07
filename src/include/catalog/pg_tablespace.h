@@ -24,17 +24,22 @@
 /* ----------------
  *		pg_tablespace definition.  cpp turns this into
  *		typedef struct FormData_pg_tablespace
+ *	主要控制数据分布在不同的磁盘位置
  * ----------------
  */
 #define TableSpaceRelationId  1213
 
+/* 参考 http://www.postgres.cn/docs/10/catalog-pg-tablespace.html */
 CATALOG(pg_tablespace,1213) BKI_SHARED_RELATION
 {
 	NameData	spcname;		/* tablespace name */
+	/* 创建表空间的用户 */
 	Oid			spcowner;		/* owner of tablespace */
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
+	/* 表空间访问控制权限 */
 	aclitem		spcacl[1];		/* access permissions */
+	/* 表空间的物理位置（操作系统路径） */
 	text		spcoptions[1];	/* per-tablespace options */
 #endif
 } FormData_pg_tablespace;

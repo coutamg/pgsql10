@@ -454,10 +454,12 @@ get_progname(const char *argv0)
 {
 	const char *nodir_name;
 	char	   *progname;
-
+	/* 传入的是 /usr/local/pgsql/bin/initdb, 返回的 nodir_name 是 /initdb */
+	/* 若传入 initdb, 则返回为空 */
 	nodir_name = last_dir_separator(argv0);
+	
 	if (nodir_name)
-		nodir_name++;
+		nodir_name++; /* 去掉/initdb 前面的 / 得到 initdb */
 	else
 		nodir_name = skip_drive(argv0);
 
@@ -479,6 +481,7 @@ get_progname(const char *argv0)
 		progname[strlen(progname) - (sizeof(EXE) - 1)] = '\0';
 #endif
 
+	// 最终返回调用程序的实际名称initdb
 	return progname;
 }
 

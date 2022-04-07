@@ -85,6 +85,13 @@ static void MemoryContextStatsInternal(MemoryContext context, int level,
  *
  * In a standalone backend this must be called during backend startup.
  */
+/*
+	1. 使用特定的内存管理方式，以及特定的内存管理函数，减少了malloc和free的使用，降低了开发复杂度，
+		并减少了内存泄漏的风险；
+	2. 由于malloc是会针对多线程进行一定设计，所以加了一定的锁，当内存进行频繁申请和释放时，会有一
+		定的性能损耗，PG释放MemoryContext首先会将其加入到freelist中，减少malloc的频率，提高内
+		存申请的效率。
+*/
 void
 MemoryContextInit(void)
 {
@@ -137,10 +144,12 @@ MemoryContextReset(MemoryContext context)
 	AssertArg(MemoryContextIsValid(context));
 
 	/* save a function call in common case where there are no children */
+	/* 如果存在子节点，则直接删除所有子节点 */
 	if (context->firstchild != NULL)
 		MemoryContextDeleteChildren(context);
 
 	/* save a function call if no pallocs since startup or last reset */
+	/* 如果没有reset过，或者reset后未再申请内存，则对当前MemoryContext进行reset */
 	if (!context->isReset)
 		MemoryContextResetOnly(context);
 }
@@ -158,7 +167,9 @@ MemoryContextResetOnly(MemoryContext context)
 	/* Nothing to do if no pallocs since startup or last reset */
 	if (!context->isReset)
 	{
+		/* 回掉函数 */
 		MemoryContextCallResetCallbacks(context);
+		/* 利用methods的reset函数处理MemoryContext */
 		(*context->methods->reset) (context);
 		context->isReset = true;
 		VALGRIND_DESTROY_MEMPOOL(context);
@@ -178,7 +189,7 @@ MemoryContextResetChildren(MemoryContext context)
 	MemoryContext child;
 
 	AssertArg(MemoryContextIsValid(context));
-
+	// /* 递归遍历所有的子节点，进行reset */
 	for (child = context->firstchild; child != NULL; child = child->nextchild)
 	{
 		MemoryContextResetChildren(child);
@@ -205,6 +216,7 @@ MemoryContextDelete(MemoryContext context)
 	/* And not CurrentMemoryContext, either */
 	Assert(context != CurrentMemoryContext);
 
+	/* 如果存在子节点，则删除所有子节点 */
 	MemoryContextDeleteChildren(context);
 
 	/*
@@ -213,6 +225,7 @@ MemoryContextDelete(MemoryContext context)
 	 * leaking the whole context (if it's not a root context) if we do it
 	 * after, so let's do it before.
 	 */
+	/* 回调函数 */
 	MemoryContextCallResetCallbacks(context);
 
 	/*
@@ -220,8 +233,10 @@ MemoryContextDelete(MemoryContext context)
 	 * there's an error we won't have deleted/busted contexts still attached
 	 * to the context tree.  Better a leak than a crash.
 	 */
+	/* 设置父节点为空 */
 	MemoryContextSetParent(context, NULL);
 
+	/* 删除此MemoryContext */
 	(*context->methods->delete_context) (context);
 	VALGRIND_DESTROY_MEMPOOL(context);
 	pfree(context);
@@ -241,6 +256,7 @@ MemoryContextDeleteChildren(MemoryContext context)
 	 * MemoryContextDelete will delink the child from me, so just iterate as
 	 * long as there is a child.
 	 */
+	/* 如果存在子节点，则删除所有子节点 */
 	while (context->firstchild != NULL)
 		MemoryContextDelete(context->firstchild);
 }
@@ -636,6 +652,9 @@ MemoryContextContains(MemoryContext context, void *pointer)
  * deletion.
  *--------------------
  */
+/* 对于MemoryContextData的操作本质上就是在调用AllocSetMethods，但是比之要多了一些更高
+   层次的修改。PostgreSQL进程实际调用的内存管理函数就是这里的函数操作接口
+*/
 MemoryContext
 MemoryContextCreate(NodeTag tag, Size size,
 					MemoryContextMethods *methods,
@@ -681,11 +700,15 @@ MemoryContextCreate(NodeTag tag, Size size,
 	/* Could use MemoryContextSetParent here, but doesn't seem worthwhile */
 	if (parent)
 	{
-		node->parent = parent;
+		/* 
+		* 如果父节点不为空，将当前MemoryContext的nextchild指向父节点的第一个子节点
+		* 则将新的MemoryContext作为父节点的第一个子节点
+		*/
+		node->parent = parent;// 当前节点父节点赋值
 		node->nextchild = parent->firstchild;
 		if (parent->firstchild != NULL)
 			parent->firstchild->prevchild = node;
-		parent->firstchild = node;
+		parent->firstchild = node; // 新的节点作为父节点第一个节点
 		/* inherit allowInCritSection flag from parent */
 		node->allowInCritSection = parent->allowInCritSection;
 	}

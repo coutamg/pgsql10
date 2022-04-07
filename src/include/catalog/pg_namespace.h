@@ -33,13 +33,14 @@
  */
 #define NamespaceRelationId  2615
 
+/* 参考 www.postgres.cn/docs/10/catalog-pg-namespace.html */
 CATALOG(pg_namespace,2615)
 {
-	NameData	nspname;
-	Oid			nspowner;
+	NameData	nspname; /* 名字空间的名字 */
+	Oid			nspowner; /* 名字空间的所有者 OID */
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
-	aclitem		nspacl[1];
+	aclitem		nspacl[1]; /* 访问权限 */
 #endif
 } FormData_pg_namespace;
 

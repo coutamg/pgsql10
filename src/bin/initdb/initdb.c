@@ -194,7 +194,8 @@ static char *authwarning = NULL;
  */
 static const char *boot_options = "-F";
 static const char *backend_options = "--single -F -O -j -c search_path=pg_catalog -c exit_on_error=true";
-
+/* 1.初期准备主要是相关列表的初期化
+   pgdata下的目录列表  */
 static const char *const subdirs[] = {
 	"global",
 	"pg_wal/archive_status",
@@ -219,7 +220,40 @@ static const char *const subdirs[] = {
 	"pg_logical/snapshots",
 	"pg_logical/mappings"
 };
+/*
+通过initdb可以创建postgresql的集群目录pgdata，这里列一下各个目录和文件的作用：
 
+pgdata                     (集群目录)
+  丨--base                (数据库目录)
+        丨--1                (template1)
+        丨--13268        (template0)
+        丨--13269        (postgres)
+  丨--global              (用于存储全局的系统表信息和全局控制信息)
+        丨--pg_control (用于存储全局控制信息)        
+        丨--1136          (pg_pltemplate)
+        丨--xxxx          (其它表信息)
+  丨--pg_hba.conf        (访问控制文件)
+  丨--pg_ident.conf        (用户映射控制文件)
+  丨--PG_VERSION        (版本信息文件)
+  丨--postgresql.conf    (集群配置文件)
+  丨--postgresql.auto.conf  (集群配置文件，优先级高于postgresql.conf，只能通过alter命令修改)
+
+  丨--pg_clog            (用于存储事务提交状态数据)
+  丨--pg_commit_ts        (用于存储已提交事务的时间)
+  丨--pg_dynshmem        (用于存储动态共享内存子系统使用的文件)
+  丨--pg_logical        (用于存储逻辑解码的状态数据)
+  丨--pg_multixact        (用于存储多事务状态数据)
+  丨--pg_notify            (用于存储LISTEN/NOTIFY状态数据)
+  丨--pg_replslot        (用于存储包含复制槽数据)
+  丨--pg_serial            (用于存储已经提交的序列化事务的有关信息)
+  丨--pg_snapshots        (用于存储导出的快照)
+  丨--pg_stat            (用于存储统计子系统的永久文件)
+  丨--pg_stat_tmp        (用于存储统计子系统的临时文件)
+  丨--pg_subtrans        (用于存储统子事务状态数据)
+  丨--pg_tblspc            (用于存储表空间的符号链接)
+  丨--pg_twophase        (用于存储预备事务的状态文件)
+  丨--pg_xlog            (用于存储WAL日志)
+*/
 
 /* path to 'initdb' binary directory */
 static char bin_path[MAXPGPATH];
@@ -911,9 +945,11 @@ test_config_settings(void)
 	 */
 #define MIN_BUFS_FOR_CONNS(nconns)	((nconns) * 10)
 
+	// 定义 max_connections 尝试区间
 	static const int trial_conns[] = {
 		100, 50, 40, 30, 20, 10
 	};
+	// 定义 shared_buffers 的尝试区间
 	static const int trial_bufs[] = {
 		16384, 8192, 4096, 3584, 3072, 2560, 2048, 1536,
 		1000, 900, 800, 700, 600, 500,
@@ -937,7 +973,14 @@ test_config_settings(void)
 	{
 		test_conns = trial_conns[i];
 		test_buffs = MIN_BUFS_FOR_CONNS(test_conns);
-
+		// 下面拼装了一个cmd命令
+		//  几个参数的值如下
+		// backend_exec:/usr/local/pgsql/bin/postgres
+		// boot_options:-F
+		// test_buffs:1000  之前有过宏定义，值为test_conns*10
+		// test_conns:100  即trial_conns[0]
+		// 最终命令： "/usr/local/pgsql/bin/postgres" --boot -x0 -F -c max_connections=100
+		//             -c  shared_buffers=1000 < "/dev/null" > "/dev/null" 2>&1"
 		snprintf(cmd, sizeof(cmd),
 				 "\"%s\" --boot -x0 %s "
 				 "-c max_connections=%d "
@@ -947,6 +990,8 @@ test_config_settings(void)
 				 backend_exec, boot_options,
 				 test_conns, test_buffs,
 				 DEVNULL, DEVNULL);
+		// 这里的system函数，会根据shared_buffers和max_connections值去fork一个postgres的子进程
+		// 然后，然后返回fork的结果，判断shared_buffers和max_connections是否可行
 		status = system(cmd);
 		if (status == 0)
 		{
@@ -963,6 +1008,7 @@ test_config_settings(void)
 	printf(_("selecting default shared_buffers ... "));
 	fflush(stdout);
 
+	// 同上
 	for (i = 0; i < bufslen; i++)
 	{
 		/* Use same amount of memory, independent of BLCKSZ */
@@ -1296,6 +1342,9 @@ bootstrap_template1(void)
 	if (debug)
 		talkargs = "-d 5";
 
+	// 读取postgres.bki文件
+    // 这边的BKI是一种特殊脚本，在引导模式的时候会被后台解析
+    // postgres.bki文件在\src\backend\catalog目录下
 	bki_lines = readfile(bki_file);
 
 	/* Check that bki file appears to be of the right version */
@@ -1314,7 +1363,8 @@ bootstrap_template1(void)
 	}
 
 	/* Substitute for various symbols used in the BKI file */
-
+	// 向pg_attribute插入数据时，第五个参数是宏的名称
+    // 这里会用宏的值去替换宏名称，这里的 NAMEDATALEN 就被替换成了64
 	sprintf(buf, "%d", NAMEDATALEN);
 	bki_lines = replace_token(bki_lines, "NAMEDATALEN", buf);
 
@@ -1355,12 +1405,17 @@ bootstrap_template1(void)
 	/* Also ensure backend isn't confused by this environment var: */
 	unsetenv("PGCLIENTENCODING");
 
+	// 到这里，文件的分析和处理就完了了，下面还要拼接一下postgres命令的字符串
+    // 这里第一个参数依旧是postgres的可执行程序，不过加了--boot参数，意思进入引导模式(bootstrap模式)
+    // 这个模式官方手册中并没有过多介绍，似乎也只会在initdb阶段使用
+    // 引导模式的入口是AuxiliaryProcessMain()函数
 	snprintf(cmd, sizeof(cmd),
 			 "\"%s\" --boot -x1 %s %s %s",
 			 backend_exec,
 			 data_checksums ? "-k" : "",
 			 boot_options, talkargs);
 
+	// 下面就开始执行上面拼接好的字符串了
 	PG_CMD_OPEN;
 
 	for (line = bki_lines; *line != NULL; line++)
@@ -1372,7 +1427,7 @@ bootstrap_template1(void)
 	PG_CMD_CLOSE;
 
 	free(bki_lines);
-
+	// 这里的check_ok()其实就是对 上面postgres命令执行过程中信号量的处理
 	check_ok();
 }
 
@@ -1492,11 +1547,14 @@ setup_depend(FILE *cmdfd)
 		 * First delete any already-made entries; PINs override all else, and
 		 * must be the only entries for their objects.
 		 */
+		/* 删除pg_depend和pg_shdepend表中的数据并清理
+		   pg_depend和pg_shdepend表之前通过postgres.bki创建 */
 		"DELETE FROM pg_depend;\n\n",
 		"VACUUM pg_depend;\n\n",
 		"DELETE FROM pg_shdepend;\n\n",
 		"VACUUM pg_shdepend;\n\n",
 
+		/* 向pg_depend表中填充数据 */
 		"INSERT INTO pg_depend SELECT 0,0,0, tableoid,oid,0, 'p' "
 		" FROM pg_class;\n\n",
 		"INSERT INTO pg_depend SELECT 0,0,0, tableoid,oid,0, 'p' "
@@ -1552,6 +1610,7 @@ setup_depend(FILE *cmdfd)
 		NULL
 	};
 
+	// 逐行执行
 	for (line = pg_depend_setup; *line != NULL; line++)
 		PG_CMD_PUTS(*line);
 }
@@ -1564,7 +1623,7 @@ setup_sysviews(FILE *cmdfd)
 {
 	char	  **line;
 	char	  **sysviews_setup;
-
+	// 这里其实就是读取了system_views.sql文件，然后逐行执行
 	sysviews_setup = readfile(system_views_file);
 
 	for (line = sysviews_setup; *line != NULL; line++)
@@ -1582,15 +1641,18 @@ setup_sysviews(FILE *cmdfd)
 static void
 setup_description(FILE *cmdfd)
 {
+	// 创建临时表tmp_pg_description
 	PG_CMD_PUTS("CREATE TEMP TABLE tmp_pg_description ( "
 				"	objoid oid, "
 				"	classname name, "
 				"	objsubid int4, "
 				"	description text) WITHOUT OIDS;\n\n");
 
+	// 把postgres.description文件中的内容copy到tmp_pg_description表
 	PG_CMD_PRINTF1("COPY tmp_pg_description FROM E'%s';\n\n",
 				   escape_quotes(desc_file));
 
+	// 把tmp_pg_description表中的数据插入到pg_description表
 	PG_CMD_PUTS("INSERT INTO pg_description "
 				" SELECT t.objoid, c.oid, t.objsubid, t.description "
 				"  FROM tmp_pg_description t, pg_class c "
@@ -1641,6 +1703,7 @@ setup_collation(FILE *cmdfd)
 	 * in pg_collation.h.  But add it before reading system collations, so
 	 * that it wins if libc defines a locale named ucs_basic.
 	 */
+	// 直接向pg_collation表插入数据
 	PG_CMD_PRINTF3("INSERT INTO pg_collation (collname, collnamespace, collowner, collprovider, collencoding, collcollate, collctype) VALUES ('ucs_basic', 'pg_catalog'::regnamespace, %u, '%c', %d, 'C', 'C');\n\n",
 				   BOOTSTRAP_SUPERUSERID, COLLPROVIDER_LIBC, PG_UTF8);
 
@@ -1656,7 +1719,7 @@ setup_conversion(FILE *cmdfd)
 {
 	char	  **line;
 	char	  **conv_lines;
-
+	// 这里其实就是读取了conversion_create.sql文件，然后逐行执行
 	conv_lines = readfile(conversion_file);
 	for (line = conv_lines; *line != NULL; line++)
 	{
@@ -1676,7 +1739,7 @@ setup_dictionary(FILE *cmdfd)
 {
 	char	  **line;
 	char	  **conv_lines;
-
+	// 这里其实就是读取了\src\backend\catalog\snowball_create.sql文件，然后逐行执行
 	conv_lines = readfile(dictionary_file);
 	for (line = conv_lines; *line != NULL; line++)
 	{
@@ -1890,6 +1953,7 @@ setup_schema(FILE *cmdfd)
 	char	  **line;
 	char	  **lines;
 
+	// 这里读取了information_schema.sql文件
 	lines = readfile(info_schema_file);
 
 	for (line = lines; *line != NULL; line++)
@@ -1900,6 +1964,7 @@ setup_schema(FILE *cmdfd)
 
 	free(lines);
 
+	// 这里更新了一下sql_implementation_info表中的character_value字段
 	PG_CMD_PRINTF1("UPDATE information_schema.sql_implementation_info "
 				   "  SET character_value = '%s' "
 				   "  WHERE implementation_info_name = 'DBMS VERSION';\n\n",
@@ -1924,6 +1989,10 @@ load_plpgsql(FILE *cmdfd)
 /*
  * clean everything up in template1
  */
+// 这个函数其实就是对template1分别执行以下命令
+// ANALYZE：收集template1的统计信息
+// VACUUM FULL：完全清理template1
+// VACUUM FREEZE：选择激进的元组“冻结”
 static void
 vacuum_db(FILE *cmdfd)
 {
@@ -1976,6 +2045,7 @@ static void
 make_postgres(FILE *cmdfd)
 {
 	const char *const *line;
+	// 这里还会顺带把postgres数据库设置为默认连接数据库
 	static const char *const postgres_setup[] = {
 		"CREATE DATABASE postgres;\n\n",
 		"COMMENT ON DATABASE postgres IS 'default administrative connection database';\n\n",
@@ -2654,7 +2724,7 @@ void
 create_data_directory(void)
 {
 	int			ret;
-
+	// 这里会判断目录是否有权限，或者目录是否为空等情况
 	switch ((ret = pg_check_dir(pg_data)))
 	{
 		case 0:
@@ -2676,7 +2746,7 @@ create_data_directory(void)
 			break;
 
 		case 1:
-			/* Present but empty, fix permissions and use it */
+			/* Present but empty, fix - and use it */
 			printf(_("fixing permissions on existing directory %s ... "),
 				   pg_data);
 			fflush(stdout);
@@ -2850,19 +2920,22 @@ initialize_data_directory(void)
 {
 	PG_CMD_DECL;
 	int			i;
-
+	// 进行对信号量的处理
 	setup_signals();
 
 	umask(S_IRWXG | S_IRWXO);
-
+	// 创建pgdata目录
 	create_data_directory();
 
+	// 创建pgdata目录下xlog目录，其中主要也是判断权限，路径等问题
 	create_xlog_or_symlink();
 
 	/* Create required subdirectories (other than pg_wal) */
 	printf(_("creating subdirectories ... "));
 	fflush(stdout);
 
+	// 创建pgdata下的其他子目录
+	// //subdir 这个列表里面存放需要创建的子目录的名称
 	for (i = 0; i < lengthof(subdirs); i++)
 	{
 		char	   *path;
@@ -2886,21 +2959,37 @@ initialize_data_directory(void)
 	check_ok();
 
 	/* Top level PG_VERSION is checked by bootstrapper, so make it first */
+	// 创建PG_VERSION文件，这里为 10.0
 	write_version_file(NULL);
 
 	/* Select suitable configuration settings */
+	// 创建一个空的postgresql.conf文件
 	set_null_conf();
+
+	// 确定 max_connections 和 shared_buffers 的值
 	test_config_settings();
 
 	/* Now create all the text config files */
+	// 将相应的参数写到 postgresql.conf 、pg_hba.conf等文件
 	setup_config();
 
 	/* Bootstrap template1 */
+	/*
+	   初期化bootstrap_template1数据库
+		这里大概提一下后面的流程，和template流程：
+		初期化template1数据库 -> 拷贝生成template0数据库 -> 拷贝生成postgres数据库
+		template1：默认的数据库模板，可以连接和创建对象
+		template0：相当于纯净版本的备份，不可以连接和创建对象
+
+		然后代码分析之前还要说明一个文件postgres.bki
+		BKI是一种特殊脚本，在引导模式的时候会被后台解析，文件位于share目录下
+	*/
 	bootstrap_template1();
 
 	/*
 	 * Make the per-database PG_VERSION for template1 only after init'ing it
 	 */
+	// 在template1模板创建好之后在其目录下创建一个版本信息文件
 	write_version_file("base/1");
 
 	/*
@@ -2910,6 +2999,11 @@ initialize_data_directory(void)
 	fputs(_("performing post-bootstrap initialization ... "), stdout);
 	fflush(stdout);
 
+	/* 到了这里引导模式的工作基本就结束了，下面开始使用postgres的单用户模式对template1
+		创建系统表，视图，依赖，以及扩展插件的安装等一列操作 */
+
+	// 这里第一个参数给的是 postgres，第二个参数给的是 -single -F -O -c search_path=pg_catalog -c exit_on_error=true
+	// 这里把 exit_on_error 设为 true 之后，任何错误将中止当前会话。默认是false，只有 FATAL 错误（致命）将中止会话。
 	snprintf(cmd, sizeof(cmd),
 			 "\"%s\" %s template1 >%s",
 			 backend_exec, backend_options,
@@ -2917,35 +3011,47 @@ initialize_data_directory(void)
 
 	PG_CMD_OPEN;
 
+	// 设置search_path和exit_on_error
 	setup_auth(cmdfd);
 
+	// 通过setup_depend()设置依赖关系，其实就是更新pg_depend和pg_shdepend表
 	setup_depend(cmdfd);
 
 	/*
 	 * Note that no objects created after setup_depend() will be "pinned".
 	 * They are all droppable at the whim of the DBA.
 	 */
-
+	// 通过setup_sysviews()创建系统视图
 	setup_sysviews(cmdfd);
 
+	// 通过setup_description()创建pg_description和pg_shdescription表，也就是描述表
 	setup_description(cmdfd);
 
+	// 通过setup_collation()创建pg_collation表，也就是排序规则表
 	setup_collation(cmdfd);
 
+	// setup_conversion()创建表pg_conversion，也就是编码转换表
 	setup_conversion(cmdfd);
 
+	// 通过 setup_dictionary()创建一些额外的目录
 	setup_dictionary(cmdfd);
 
+	// 设置权限
 	setup_privileges(cmdfd);
 
+	// 创建info_schema
 	setup_schema(cmdfd);
 
+	// 添加plpgsql扩展
 	load_plpgsql(cmdfd);
 
+	// 对template1进行清理
 	vacuum_db(cmdfd);
 
+	// 把template1 COPY一份 成为template0
 	make_template0(cmdfd);
 
+	// 把template1 COPY一份 成为postgres
 	make_postgres(cmdfd);
 
 	PG_CMD_CLOSE;
@@ -2957,6 +3063,7 @@ initialize_data_directory(void)
 int
 main(int argc, char *argv[])
 {
+	// 参数列表
 	static struct option long_options[] = {
 		{"pgdata", required_argument, NULL, 'D'},
 		{"encoding", required_argument, NULL, 'E'},
@@ -3005,12 +3112,31 @@ main(int argc, char *argv[])
 	 * unexpected output ordering when, eg, output is redirected to a file.
 	 * POSIX says we must do this before any other usage of these files.
 	 */
+	/* 确保stdout和stderr的缓冲行为与交互使用（至少在大多数平台上）中的缓冲行为匹配。
+		setvbuf函数用来定义流 stream 应如何缓冲
+		这里将stdout定义为_IONBF，即：不使用缓冲。每个 I/O 操作都被即时写入。buffer 和 size 参数被忽略。
+		stdout定义为PG_IOLBF，PG_IOLBF和_IONBF一样，是无缓冲。
+	*/
 	setvbuf(stdout, NULL, PG_IOLBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
+	/*
+		这里有两个参数，argc和argv[]
+		argc： 命令行总的参数个数
+		argv[]：保存命令行参数的字符串指针，其中argv[0]参数是程序的全名
+
+		假设我在命令行输入initdb -D pgdata
+		argc=3
+		argv[0]=“/usr/local/pgsql/bin/initdb”
+		argv[1]=“-D“
+		argv[2]=“data”
+	*/
+	// 获取 initdb 名字
 	progname = get_progname(argv[0]);
+	// 设置环境变量
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("initdb"));
 
+	// 首先判断参数是否是版本或者帮助信息
 	if (argc > 1)
 	{
 		if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-?") == 0)
@@ -3026,7 +3152,17 @@ main(int argc, char *argv[])
 	}
 
 	/* process command-line options */
+	/*
+		argc：上面分析过，参数个数。
+		argv：上面分析过，命令行参数的字符串指针。
+		“dD:E:kL:nNU:WA:sST:X:”：可识别的字符选项。
+		long_options: 参数列表。
+		&option_index: 参数索引，标识当前在第几个参数
 
+		getopt_long 函数的返回值是 识别的字符选项，比如这里是 -D, 则返回 D，参数的值则是通过
+		optarg 这个全局变量传出来的，这里是 data，然后通过 pg_strdup 函数赋值给 pgdata。
+		其中pg_strdup函数是封装了strdup函数，在赋值前会先判断optarg是否为空
+	*/
 	while ((c = getopt_long(argc, argv, "dD:E:kL:nNU:WA:sST:X:", long_options, &option_index)) != -1)
 	{
 		switch (c)
@@ -3137,6 +3273,7 @@ main(int argc, char *argv[])
 		optind++;
 	}
 
+	// 一般在一个参数后面添加多个值才会走到此路径
 	if (optind < argc)
 	{
 		fprintf(stderr, _("%s: too many command-line arguments (first is \"%s\")\n"),
@@ -3147,6 +3284,9 @@ main(int argc, char *argv[])
 	}
 
 	/* If we only need to fsync, just do it and exit */
+	/* 数据同步的代码，只有在initdb时加上-S参数才会走到这里，这段代码会安全地把所有
+	   数据库文件写入到磁盘并退出。这不会执行任何正常的initdb操作。
+	*/
 	if (sync_only)
 	{
 		setup_pgdata();
@@ -3172,6 +3312,10 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
+	/* 设定认证方式
+		如果只设定了-D参数，没有设定认证方式，所以这里authmethod为空，
+		认证方式被设置为默认的trust。所以后续的代码相关的检查也被跳过
+	*/
 	check_authmethod_unspecified(&authmethodlocal);
 	check_authmethod_unspecified(&authmethodhost);
 
@@ -3182,8 +3326,12 @@ main(int argc, char *argv[])
 
 	get_restricted_token(progname);
 
+	/*
+		没有指定-D的话，会尝试从系统变量中读取PGDATA变量然后赋值给 pgdata
+	*/
 	setup_pgdata();
-
+	/* 找到同目录下postgre程序，后面初期化数据库集簇很多操作都会调用postgres程序，
+		然后设定bin和share路径*/
 	setup_bin_paths(argv[0]);
 
 	effective_user = get_id();
@@ -3201,12 +3349,15 @@ main(int argc, char *argv[])
 			 "This user must also own the server process.\n\n"),
 		   effective_user);
 
+	// 设置information_schema的版本信息
 	set_info_version();
 
+	// 设置后面数据集簇初期化需要用到的文件，顺便检查一下所需文件是否存在
 	setup_data_file_paths();
 
+	/* 设定字符集，如果在initdb时不设定local，默认使用系统的local，因系统而异 */
 	setup_locale_encoding();
-
+	// 用来设定区域和格式化
 	setup_text_search();
 
 	printf("\n");
@@ -3221,8 +3372,10 @@ main(int argc, char *argv[])
 
 	printf("\n");
 
+	// 数据集簇初期化的过程
 	initialize_data_directory();
 
+	// 这里其实就是是否等待数据同步到磁盘，默认是开启的，可以在initdb时通过-N关闭
 	if (do_sync)
 	{
 		fputs(_("syncing data to disk ... "), stdout);

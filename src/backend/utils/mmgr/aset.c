@@ -123,9 +123,9 @@ typedef struct AllocSetContext
 	// 对应该内存上下文的头部信息
 	MemoryContextData header;	/* Standard memory-context fields */
 	/* Info about storage allocated in this context: */
-	// 该内存上下文中所有内存块的链表
+	// 内存块链表，记录内存上下文向操作系统申请的连续大块内存
 	AllocBlock	blocks;			/* head of list of blocks in this set */
-	// 该内存上下文中空闲内存片的数组
+	// 该内存上下文中空闲内存片的数组，组织该内存上下文里所有内存块中已释放的内存片的链表结构
 	AllocChunk	freelist[ALLOCSET_NUM_FREELISTS];	/* free chunk lists */
 	/* Allocation parameters for this context: */
 	// 初始内存块的大小  initBlockSize <= nextBlockSize <= maxBlockSize
@@ -134,7 +134,8 @@ typedef struct AllocSetContext
 	Size		maxBlockSize;	/* maximum block size */
 	// 下一个要分配的内存块的大小，分配一个新的内存块是采用
 	Size		nextBlockSize;	/* next block size to allocate */
-	// 分配内存块的尺寸阈值，在分配内存块是用到,该值有效时，是为了运行是替换 ALLOC_CHUNK_LIMIT 这个宏
+	// 分配内存片的尺寸阈值，在分配内存块是用到,该值有效时，是为了运行是替换 ALLOC_CHUNK_LIMIT 这个宏
+	// 申请的内存超过此阀值直接分配新的block
 	Size		allocChunkLimit;	/* effective chunk size limit */
 	// keeper 中的内存块在内存上下文重置时保留不被释放
 	AllocBlock	keeper;			/* if not NULL, keep this block over resets */
@@ -154,12 +155,18 @@ typedef AllocSetContext *AllocSet;
  *		AllocBlockData is the header data for a block --- the usable space
  *		within the block begins at the next alignment boundary.
  */
+// AllocBlockData是进程用来分配、释放的内存单元，通过malloc申请
 typedef struct AllocBlockData // AllocSet 管理内存中对应的 内存块
 {
+	// 指向AllocBlockData所属的AllocSetContext
 	AllocSet	aset;			/* aset that owns this block */
+	// 在AllocSetContext中的blocks prev block
 	AllocBlock	prev;			/* prev block in aset's blocks list, if any */
+	// 在AllocSetContext中的blocks next block
 	AllocBlock	next;			/* next block in aset's blocks list, if any */
+	// 可用空闲区域的起始地址
 	char	   *freeptr;		/* start of free space in this block */
+	// 可用空闲区域的结束地址
 	char	   *endptr;			/* end of space in this block */
 }			AllocBlockData;
 
@@ -167,21 +174,32 @@ typedef struct AllocBlockData // AllocSet 管理内存中对应的 内存块
  * AllocChunk
  *		The prefix of each piece of memory in an AllocBlock
  */
+/*
+	AllocChunkData是用户存放数据的内存单元，通过palloc申请，其中已经使用
+	的AllocChunkData的aset将会指向所属的AllocSetContextData；如果是空
+	闲未使用的将会指向freelist中的下一个成员变量（没有则为空）。
+	一个AllocBlockData具有一个或多个AllocChunkData
+*/
 typedef struct AllocChunkData
 {
 	/* size is always the size of the usable space in the chunk */
+	// 当前AllocChunkData的长度
 	Size		size;
 #ifdef MEMORY_CONTEXT_CHECKING
 	/* when debugging memory usage, also store actual requested size */
 	/* this is zero in a free chunk */
+	// 在debugging模式下会记录实际请求的长度
 	Size		requested_size;
 #if MAXIMUM_ALIGNOF > 4 && SIZEOF_VOID_P == 4
+	// 对齐时使用 
 	Size		padding;
 #endif
 
 #endif							/* MEMORY_CONTEXT_CHECKING */
 
 	/* aset is the owning aset if allocated, or the freelist link if free */
+	// 当此AllocChunkData正在使用时，指向所属的AllocSetContext；未使用则指向下
+	// 一个相同大小的空闲AllocChunkData（没有则为空）
 	void	   *aset;
 
 	/* there must not be any padding to reach a MAXALIGN boundary here! */
@@ -484,6 +502,7 @@ AllocSetReset(MemoryContext context)
 	block = set->blocks;
 
 	/* New blocks list is either empty or just the keeper block */
+	/* 设置blocks指向keeper，reset不对keeper进行释放，只进行重置 */
 	set->blocks = set->keeper;
 
 	while (block != NULL)
@@ -511,6 +530,7 @@ AllocSetReset(MemoryContext context)
 #ifdef CLOBBER_FREED_MEMORY
 			wipe_mem(block, block->freeptr - ((char *) block));
 #endif
+			/* 非keeper，直接释放 */
 			free(block);
 		}
 		block = next;
@@ -546,6 +566,7 @@ AllocSetDelete(MemoryContext context)
 	set->blocks = NULL;
 	set->keeper = NULL;
 
+	/* 如果不是freelist的候选MemoryContext，则直接释放 */
 	while (block != NULL)
 	{
 		AllocBlock	next = block->next;
@@ -583,17 +604,26 @@ AllocSetAlloc(MemoryContext context, Size size)
 	 * If requested size exceeds maximum for chunks, allocate an entire block
 	 * for this request.
 	 */
+	/* 当申请的内存空间size大于内存片阀值，则直接申请新的AllocBlockData */
 	if (size > set->allocChunkLimit)
 	{
+		/* 对齐字节 */
 		chunk_size = MAXALIGN(size);
+		/* 预留AllocBlockData，AllocChunkData空间 */
 		blksize = chunk_size + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
 		block = (AllocBlock) malloc(blksize);
+		/* malloc申请失败直接返回null */
 		if (block == NULL)
 			return NULL;
+		/* 当前block指向所属的AllocSetContextData */
 		block->aset = set;
+		/* 由于是为内存申请单独申请的block，所以不需要有多个chunk，所以
+		   freeptr和endptr都指向最后的地址，表示没有空闲空间 */
 		block->freeptr = block->endptr = ((char *) block) + blksize;
 
+		/* 建立内存片chunk */
 		chunk = (AllocChunk) (((char *) block) + ALLOC_BLOCKHDRSZ);
+		/* 当前chunk指向所属的AllocSetContextData */
 		chunk->aset = set;
 		chunk->size = chunk_size;
 #ifdef MEMORY_CONTEXT_CHECKING
@@ -612,8 +642,10 @@ AllocSetAlloc(MemoryContext context, Size size)
 		 * Stick the new block underneath the active allocation block, if any,
 		 * so that we don't lose the use of the space remaining therein.
 		 */
+		/* 将当前block加入到blocks中 */
 		if (set->blocks != NULL)
 		{
+			/* 如果存在blocks，则将此block加入到blocks的第二个位置 */
 			block->prev = set->blocks;
 			block->next = set->blocks->next;
 			if (block->next)
@@ -622,6 +654,7 @@ AllocSetAlloc(MemoryContext context, Size size)
 		}
 		else
 		{
+			/* 如果不存在blocks，则将blocks直接指向此block */
 			block->prev = NULL;
 			block->next = NULL;
 			set->blocks = block;
@@ -647,12 +680,14 @@ AllocSetAlloc(MemoryContext context, Size size)
 	 * If one is found, remove it from the free list, make it again a member
 	 * of the alloc set and return its data address.
 	 */
+	/* 根据size计算log2(size)+1 */
 	fidx = AllocSetFreeIndex(size);
+	/* 选取空闲的chunk */
 	chunk = set->freelist[fidx];
 	if (chunk != NULL)
 	{
 		Assert(chunk->size >= size);
-
+		/* 如果不为null，将此chunk从freelist中移除，并返回 */
 		set->freelist[fidx] = (AllocChunk) chunk->aset;
 
 		chunk->aset = (void *) set;
@@ -678,6 +713,7 @@ AllocSetAlloc(MemoryContext context, Size size)
 	/*
 	 * Choose the actual chunk size to allocate.
 	 */
+	/* 如果不存在空闲的chunk，就需要申请新的chunk，需要计算其size */
 	chunk_size = (1 << ALLOC_MINBITS) << fidx;
 	Assert(chunk_size >= size);
 
@@ -685,10 +721,19 @@ AllocSetAlloc(MemoryContext context, Size size)
 	 * If there is enough room in the active allocation block, we will put the
 	 * chunk into that block.  Else must start a new one.
 	 */
+	/* 查看是否有合适的block可以申请chunk */
 	if ((block = set->blocks) != NULL)
 	{
+		/* 计算是否有足够的空闲空间 */
 		Size		availspace = block->endptr - block->freeptr;
 
+		/* 
+		* 如果空闲空间不足，则将已有的空闲空间划分为chunk。
+		* 这么做的原因是blocks的第一个block作为活跃内存块，
+		* 并且当前设计只对block做一次检查，避免不必要的消耗。
+		* block 剩余的空间不足，直接把该 block 剩余的空间
+		* 分配成 chunk，挂到 freelist 数组中
+		*/
 		if (availspace < (chunk_size + ALLOC_CHUNKHDRSZ))
 		{
 			/*
@@ -703,6 +748,7 @@ AllocSetAlloc(MemoryContext context, Size size)
 			 * ALLOC_CHUNK_LIMIT left in the block, this loop cannot iterate
 			 * more than ALLOCSET_NUM_FREELISTS-1 times.
 			 */
+			/* 对空闲空间进行申请chunk，空闲chuck最小为(1 << ALLOC_MINBITS) + ALLOC_CHUNKHDRSZ */
 			while (availspace >= ((1 << ALLOC_MINBITS) + ALLOC_CHUNKHDRSZ))
 			{
 				Size		availchunk = availspace - ALLOC_CHUNKHDRSZ;
@@ -713,13 +759,14 @@ AllocSetAlloc(MemoryContext context, Size size)
 				 * freelist than the one we need to put this chunk on.  The
 				 * exception is when availchunk is exactly a power of 2.
 				 */
+				/* 确定合适的chunk size，因为block所有的内容都是经过对齐的，因此能够找到合适的大小 */
 				if (availchunk != ((Size) 1 << (a_fidx + ALLOC_MINBITS)))
 				{
 					a_fidx--;
 					Assert(a_fidx >= 0);
 					availchunk = ((Size) 1 << (a_fidx + ALLOC_MINBITS));
 				}
-
+				/* 找到后直接使用此chunk */
 				chunk = (AllocChunk) (block->freeptr);
 
 				/* Prepare to initialize the chunk header. */
@@ -732,11 +779,14 @@ AllocSetAlloc(MemoryContext context, Size size)
 #ifdef MEMORY_CONTEXT_CHECKING
 				chunk->requested_size = 0;	/* mark it free */
 #endif
+				/* 将chunk加入到freelist内 */
 				chunk->aset = (void *) set->freelist[a_fidx];
 				set->freelist[a_fidx] = chunk;
 			}
 
 			/* Mark that we need to create a new block */
+			/* 设置block为null，设置创建新block的标记 */
+			// 由于没有找到合适的 chunk，从新分配 block
 			block = NULL;
 		}
 	}
@@ -744,6 +794,7 @@ AllocSetAlloc(MemoryContext context, Size size)
 	/*
 	 * Time to create a new regular (multi-chunk) block?
 	 */
+	/* 如果block是null，创建新的block */
 	if (block == NULL)
 	{
 		Size		required_size;
@@ -762,6 +813,7 @@ AllocSetAlloc(MemoryContext context, Size size)
 		 * space... but try to keep it a power of 2.
 		 */
 		required_size = chunk_size + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
+		/* 如果下一次应申请的block的大小小于当前申请的内存大小，则左移一位，知道大于等于申请的大小 */
 		while (blksize < required_size)
 			blksize <<= 1;
 
@@ -772,6 +824,10 @@ AllocSetAlloc(MemoryContext context, Size size)
 		 * We could be asking for pretty big blocks here, so cope if malloc
 		 * fails.  But give up if there's less than a meg or so available...
 		 */
+		/* 
+		* 如果malloc失败，则继续申请，失败是因为可能blksize远远大于required_size，
+		* 也超出当前剩余内存。当申请的内存小于1MB或blksize < required_size则放弃申请。
+		*/
 		while (block == NULL && blksize > 1024 * 1024)
 		{
 			blksize >>= 1;
@@ -861,7 +917,7 @@ AllocSetFree(MemoryContext context, void *pointer)
 			elog(WARNING, "detected write past chunk end in %s %p",
 				 set->header.name, chunk);
 #endif
-
+	/* chunk大小超过chunk阀值，则直接释放此chunk所属的block */
 	if (chunk->size > set->allocChunkLimit)
 	{
 		/*
@@ -882,6 +938,7 @@ AllocSetFree(MemoryContext context, void *pointer)
 			elog(ERROR, "could not find block containing chunk %p", chunk);
 
 		/* OK, remove block from aset's list and free it */
+		/* 从所属的blocks中移除 */
 		if (block->prev)
 			block->prev->next = block->next;
 		else
@@ -896,8 +953,9 @@ AllocSetFree(MemoryContext context, void *pointer)
 	else
 	{
 		/* Normal case, put the chunk into appropriate freelist */
+		/* 一般大小，则加入到freelist中 */
 		int			fidx = AllocSetFreeIndex(chunk->size);
-
+		/* chunk的aset指向freelist */
 		chunk->aset = (void *) set->freelist[fidx];
 
 #ifdef CLOBBER_FREED_MEMORY
@@ -946,6 +1004,7 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 	 * allocated area already is >= the new size.  (In particular, we always
 	 * fall out here if the requested size is a decrease.)
 	 */
+	/* 如果realloc的大小，小于chunk大小，直接返回 */
 	if (oldsize >= size)
 	{
 #ifdef MEMORY_CONTEXT_CHECKING
@@ -989,7 +1048,7 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 
 		return pointer;
 	}
-
+	/* 如果此chunk的size大于内存片的阀值，则表示这是单独的block，直接对block进行处理 */
 	if (oldsize > set->allocChunkLimit)
 	{
 		/*
@@ -1013,6 +1072,7 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 			elog(ERROR, "could not find block containing chunk %p", chunk);
 
 		/* Do the realloc */
+		/* 使用realloc对此block进行处理 */
 		chksize = MAXALIGN(size);
 		blksize = chksize + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
 		block = (AllocBlock) realloc(block, blksize);
@@ -1021,6 +1081,7 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 		block->freeptr = block->endptr = ((char *) block) + blksize;
 
 		/* Update pointers since block has likely been moved */
+		/* 在realloc后的block申请chunk */
 		chunk = (AllocChunk) (((char *) block) + ALLOC_BLOCKHDRSZ);
 		pointer = AllocChunkGetPointer(chunk);
 		if (block->prev)
@@ -1081,9 +1142,11 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 		 * wrong freelist for the next initial palloc request, and so we leak
 		 * memory indefinitely.  See pgsql-hackers archives for 2007-08-11.)
 		 */
+		/* 如果realloc的大小，大于chunk大小 */
 		AllocPointer newPointer;
 
 		/* allocate new chunk */
+		/* 申请新的chunk */
 		newPointer = AllocSetAlloc((MemoryContext) set, size);
 
 		/* leave immediately if request was not completed */
@@ -1105,9 +1168,11 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 #endif
 
 		/* transfer existing data (certain to fit) */
+		/* 将原有内容复制到新的chunk内 */
 		memcpy(newPointer, pointer, oldsize);
 
 		/* free old chunk */
+		/* 释放原来的chunk */
 		AllocSetFree((MemoryContext) set, pointer);
 
 		return newPointer;
@@ -1153,6 +1218,10 @@ AllocSetIsEmpty(MemoryContext context)
  * print: true to print stats to stderr.
  * totals: if not NULL, add stats about this allocset into *totals.
  */
+/*
+	遍历当前AllocSetContextData的blocks，统计内存申请总量，block数，
+	未使用的chunk数，以及使用的内存大小。
+*/
 static void
 AllocSetStats(MemoryContext context, int level, bool print,
 			  MemoryContextCounters *totals)
@@ -1165,12 +1234,14 @@ AllocSetStats(MemoryContext context, int level, bool print,
 	AllocBlock	block;
 	int			fidx;
 
+	/* 遍历blocks，确定使用了多少block */
 	for (block = set->blocks; block != NULL; block = block->next)
 	{
 		nblocks++;
 		totalspace += block->endptr - ((char *) block);
 		freespace += block->endptr - block->freeptr;
 	}
+	/* 查找空闲chunk链表，计算空闲chunk数量，以及空闲空间大小 */
 	for (fidx = 0; fidx < ALLOCSET_NUM_FREELISTS; fidx++)
 	{
 		AllocChunk	chunk;
