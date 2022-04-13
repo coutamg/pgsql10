@@ -1,6 +1,6 @@
 %top{
 /*-------------------------------------------------------------------------
- *
+ *  定义段
  * scan.l
  *	  lexical scanner for PostgreSQL
  *
@@ -389,6 +389,7 @@ other			.
  *  Also whitespace (comment) must appear before operator.
  */
 
+/* 下面是规则段 */
 %%
 
 {whitespace}	{
@@ -1011,7 +1012,8 @@ other			.
 
 %%
 
-/*
+/* 下面是代码段 */
+/* 
  * Arrange access to yyextra for subroutines of the main yylex() function.
  * We expect each subroutine to have a yyscanner parameter.  Rather than
  * use the yyget_xxx functions, which might or might not get inlined by the

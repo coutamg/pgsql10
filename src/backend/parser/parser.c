@@ -15,7 +15,7 @@
  *
  * IDENTIFICATION
  *	  src/backend/parser/parser.c
- *
+ * 词法/语法分析的主入口文件，对查询语句进行词法和语法分析后，返回分析树
  *-------------------------------------------------------------------------
  */
 
@@ -50,6 +50,7 @@ raw_parser(const char *str)
 	parser_init(&yyextra);
 
 	/* Parse! */
+	// 调用 lex 和 yacc 来实现词法与语法分析
 	yyresult = base_yyparse(yyscanner);
 
 	/* Clean up (release memory) */

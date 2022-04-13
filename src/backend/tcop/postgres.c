@@ -615,6 +615,7 @@ pg_parse_query(const char *query_string)
 	if (log_parser_stats)
 		ResetUsage();
 
+	// 词法与语法分析
 	raw_parsetree_list = raw_parser(query_string);
 
 	if (log_parser_stats)

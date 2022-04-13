@@ -11,6 +11,7 @@
  * IDENTIFICATION
  *	  src/backend/parser/scansup.c
  *
+ *  提供词法分析常用的函数
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
@@ -30,6 +31,7 @@
  * the string returned is palloc'd and should eventually be pfree'd by the
  * caller!
  * ----------------
+ * 处理转义字符
  */
 
 char *
@@ -126,6 +128,8 @@ scanstr(const char *s)
  * transformations that increase the string length, but we don't yet
  * support that.  If you want to implement it, you'll need to fix
  * SplitIdentifierString() in utils/adt/varlena.c.
+ * 
+ * 大写英文字符转换为小写
  */
 char *
 downcase_truncate_identifier(const char *ident, int len, bool warn)
@@ -182,6 +186,8 @@ downcase_identifier(const char *ident, int len, bool warn, bool truncate)
  *
  * We require the caller to pass in the string length since this saves a
  * strlen() call in some common usages.
+ * 
+ * 标志符长度超过规定的最大标志符长度(64) 则将其截断
  */
 void
 truncate_identifier(char *ident, int len, bool warn)

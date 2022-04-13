@@ -59,6 +59,8 @@ const int	NumScanKeywords = lengthof(ScanKeywords);
  * translations.  This is to conform to the SQL99 spec, which says that
  * keywords are to be matched in this way even though non-keyword identifiers
  * receive a different case-normalization mapping.
+ * 
+ * 查找单词表，返回标志丹铅标志符指向单词表中对应的单词指针
  */
 const ScanKeyword *
 ScanKeywordLookup(const char *text,
