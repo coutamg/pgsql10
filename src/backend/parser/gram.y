@@ -10797,6 +10797,7 @@ opt_hold: /* EMPTY */						{ $$ = 0; }
  *
  * In non-expression contexts, we use SelectStmt which can represent a SELECT
  * with or without outer parentheses.
+ * select 的定义
  */
 
 SelectStmt: select_no_parens			%prec UMINUS
@@ -10819,6 +10820,9 @@ select_with_parens:
  * clause.
  *	2002-08-28 bjm
  */
+ /* 不带括号的 select 可定义为一条简单的 select 语句用 simple_select 表示，
+ 	也可以定义为在简单 select 语句后main接排序字句(select_clause), limit 字句(select_limit)
+	等构成复杂语句 */
 select_no_parens:
 			simple_select						{ $$ = $1; }
 			| select_clause sort_clause
@@ -10925,15 +10929,15 @@ simple_select:
 			into_clause from_clause where_clause
 			group_clause having_clause window_clause
 				{
-					SelectStmt *n = makeNode(SelectStmt);
-					n->distinctClause = $2;
-					n->targetList = $3;
-					n->intoClause = $4;
-					n->fromClause = $5;
-					n->whereClause = $6;
-					n->groupClause = $7;
-					n->havingClause = $8;
-					n->windowClause = $9;
+					SelectStmt *n = makeNode(SelectStmt); /*创建 select 节点*/
+					n->distinctClause = $2;				  /* distinct 字句*/
+					n->targetList = $3;					  /* 目标属性*/
+					n->intoClause = $4;					  /* select into 字句*/
+					n->fromClause = $5;					  /* from 字句 */
+					n->whereClause = $6;				  /* where 字句*/
+					n->groupClause = $7;				  /* group by 字句*/
+					n->havingClause = $8;				 /* having 字句*/
+					n->windowClause = $9;				  /* 窗口字句*/
 					$$ = (Node *)n;
 				}
 			| values_clause							{ $$ = $1; }
@@ -11113,7 +11117,9 @@ all_or_distinct:
  * should be placed in the DISTINCT list during parsetree analysis.
  */
 distinct_clause:
+			/*返回List 该List第一个ListCell 的ptr_value 字段为空 */
 			DISTINCT								{ $$ = list_make1(NIL); }
+			/* on 之后的表达式值(星号或者表的属性等)*/
 			| DISTINCT ON '(' expr_list ')'			{ $$ = $4; }
 		;
 
@@ -14208,7 +14214,7 @@ target_list:
 			| target_list ',' target_el				{ $$ = lappend($1, $3); }
 		;
 
-target_el:	a_expr AS ColLabel
+target_el:	a_expr AS ColLabel  /* 取别名的表达式 */
 				{
 					$$ = makeNode(ResTarget);
 					$$->name = $3;

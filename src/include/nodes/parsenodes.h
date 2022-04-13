@@ -436,9 +436,13 @@ typedef struct A_ArrayExpr
 typedef struct ResTarget
 {
 	NodeTag		type;
+	/* as 指定的属性，属性，没有则为 null*/
 	char	   *name;			/* column name or NULL */
+	/* 通过 星号，下标等引用的目标属性，没有则为 NIL*/
 	List	   *indirection;	/* subscripts, field names, and '*', or NIL */
+	/* 指向各种表达式 */
 	Node	   *val;			/* the value expression to compute or assign */
+	/* 符号出现的位置 */
 	int			location;		/* token location, or -1 if unknown */
 } ResTarget;
 
@@ -1502,9 +1506,9 @@ typedef enum SetOperation
 
 typedef struct SelectStmt
 {
-	NodeTag		type;
+	NodeTag		type; /* 节点类型，用于标识节点内容，在 selectstmt 中取值为 T_SelectStmt */
 
-	/*
+	/* 
 	 * These fields are used only in "leaf" SelectStmts.
 	 */
 	List	   *distinctClause; /* NULL, list of DISTINCT ON exprs, or
@@ -1524,6 +1528,7 @@ typedef struct SelectStmt
 	 * that a list element can be DEFAULT (represented as a SetToDefault
 	 * node), regardless of the context of the VALUES list. It's up to parse
 	 * analysis to reject that where not valid.
+	 * 产生 “常量表”，常量表可以作为虚拟表出现在 from 中
 	 */
 	List	   *valuesLists;	/* untransformed list of expression lists */
 
@@ -1540,7 +1545,9 @@ typedef struct SelectStmt
 	/*
 	 * These fields are used only in upper-level SelectStmts.
 	 */
+	/* 查询语句的集合操作 交/并/差 */
 	SetOperation op;			/* type of set op */
+	/* 在集合操作时是否指定了 ALL 关键字*/
 	bool		all;			/* ALL specified? */
 	struct SelectStmt *larg;	/* left child */
 	struct SelectStmt *rarg;	/* right child */

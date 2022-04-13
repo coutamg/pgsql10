@@ -32,6 +32,7 @@
  * Returns a list of raw (un-analyzed) parse trees.  The immediate elements
  * of the list are always RawStmt nodes.
  */
+// 返回的 List 存储生成的分析树
 List *
 raw_parser(const char *str)
 {
