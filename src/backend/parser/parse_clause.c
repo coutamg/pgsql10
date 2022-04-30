@@ -111,6 +111,7 @@ static Node *transformFrameOffset(ParseState *pstate, int frameOptions,
  * We will add onto any entries already present --- this is needed for rule
  * processing, as well as for UPDATE and DELETE.
  */
+// 处理from 子句，生成范围表，Qury 的 rtable
 void
 transformFromClause(ParseState *pstate, List *frmList)
 {
@@ -131,12 +132,12 @@ transformFromClause(ParseState *pstate, List *frmList)
 		RangeTblEntry *rte;
 		int			rtindex;
 		List	   *namespace;
-
+		// 对 from 的词法中的每一个 node 进行处理
 		n = transformFromClauseItem(pstate, n,
 									&rte,
 									&rtindex,
 									&namespace);
-
+		// 检查重名表
 		checkNameSpaceConflicts(pstate, pstate->p_namespace, namespace);
 
 		/* Mark the new namespace items as visible only to LATERAL */
@@ -1114,7 +1115,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 						RangeTblEntry **top_rte, int *top_rti,
 						List **namespace)
 {
-	if (IsA(n, RangeVar))
+	if (IsA(n, RangeVar)) // node 是一个 普通表
 	{
 		/* Plain relation reference, or perhaps a CTE reference */
 		RangeVar   *rv = (RangeVar *) n;
@@ -1130,7 +1131,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 			rte = getRTEForSpecialRelationTypes(pstate, rv);
 
 		/* if not found above, must be a table reference */
-		if (!rte)
+		if (!rte) // 作为一个 RTE_RELATION 的 RTE 加入到 p_rtable
 			rte = transformTableEntry(pstate, rv);
 
 		/* assume new rte is at end */
@@ -1138,12 +1139,14 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		Assert(rte == rt_fetch(rtindex, pstate->p_rtable));
 		*top_rte = rte;
 		*top_rti = rtindex;
+		// 将生成的 RTE 传出
 		*namespace = list_make1(makeDefaultNSItem(rte));
 		rtr = makeNode(RangeTblRef);
 		rtr->rtindex = rtindex;
 		return (Node *) rtr;
 	}
-	else if (IsA(n, RangeSubselect))
+	// node 是一个子查询
+	else if (IsA(n, RangeSubselect)) 
 	{
 		/* sub-SELECT is like a plain relation */
 		RangeTblRef *rtr;
@@ -1317,6 +1320,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		 * this step is a list of column names just like an explicitly-written
 		 * USING list.
 		 */
+		// 自然连接
 		if (j->isNatural)
 		{
 			List	   *rlist = NIL;

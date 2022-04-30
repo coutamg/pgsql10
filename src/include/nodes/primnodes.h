@@ -63,13 +63,18 @@ typedef enum OnCommitAction
 typedef struct RangeVar
 {
 	NodeTag		type;
+	// 表所在的数据库名，为空表示在当前数据库中
 	char	   *catalogname;	/* the catalog (database) name, or NULL */
+	// 表所在的模式名，为空表示在当前模式中
 	char	   *schemaname;		/* the schema name, or NULL */
+	// 表或者序列名
 	char	   *relname;		/* the relation/sequence name */
 	bool		inh;			/* expand rel by inheritance? recursively act
 								 * on children? */
 	char		relpersistence; /* see RELPERSISTENCE_* in pg_class.h */
+	// 表的别名
 	Alias	   *alias;			/* table alias & optional column aliases */
+	// 符号出现的位置
 	int			location;		/* token location, or -1 if unknown */
 } RangeVar;
 
@@ -160,23 +165,79 @@ typedef struct Expr
 #define    PRS2_OLD_VARNO			1
 #define    PRS2_NEW_VARNO			2
 
+/*
+	Var 结构体表示查询中涉及的表的列属性, 在 SQL 语句中， 投影的列属性、约束条件中的
+	列属性都是通过 Var 来表示的， 在语法分析阶段会将列属性用 ColumnRef 结构体来表示，
+	在语 义分析阶段会将语法树中的 ColumnRef 替换成 Var 用来表示一个列属性.
+*/
 typedef struct Var
 {
 	Expr		xpr;
+	// 属性所在的表在范围表中的编号
+	/* Query （查询树〉中的口able 成员变量 ，查询语句中涉及的每个表都会记录在 此able 中,
+	   其在 rtable 中的“编号”（也就是 处于链表的第几个， 从 l 开始计数， 这个编号用此index 
+	   表示）是唯一确定 的值， 在逻辑优化、 物理优化的过程中可能 varno 都是 rindex， 而在
+	   生成执行计划的阶段 ，它可能不再代表 rtable 中 的编号
+	 */
 	Index		varno;			/* index of this var's relation in the range
 								 * table, or INNER_VAR/OUTER_VAR/INDEX_VAR */
+	/* 确定了这个列属性是表中的第几列 
+		创建表的时候 ， PostgreSQL 数据库会按照 SQL 语句中指 定的列的顺序给列属性编号，
+		并将编号记录在 PG_ATTRIBUTES 系统表中.
+		varattno 、 va此ype、 va问rpemod 都是取自 PG_ATTRIBUTES 系统表中的
+	*/
 	AttrNumber	varattno;		/* attribute number of this var, or zero for
 								 * all */
+	// 该属性在 pg_type中的 OID
 	Oid			vartype;		/* pg_type OID for the type of this var */
+	// 该属性对应的 pg_attribute 元祖的 typmod 值
+	// 列属性的精度（长度） , Varchar( l 024)
 	int32		vartypmod;		/* pg_attribute typmod value */
+
 	Oid			varcollid;		/* OID of collation, or InvalidOid if none */
+	// 用于子查询中引用外层表的变量，表示子查询的层数
+	/*
+		SELECT st.sname FROM STUDENT st WHERE st. sno = 
+			ANY (SELECT sno FROM SCORE WHERE st.sno = sno)
+		
+		st.sno 虽然在子查询, 但是它是父查询中的 STUDENT 表的属性，因此它的
+		 varlevelsup 的值为 1, 说明该属性所在的 表在当 前子查询的“上 1 层 ”
+
+		sno 是 SCORE 表 的列属性，它的 varlevelsup 的值为 0, 就在当前的层次
+	*/
 	Index		varlevelsup;	/* for subquery variables referencing outer
 								 * relations; 0 in a normal var, >0 means N
 								 * levels up */
+	// 调试
 	Index		varnoold;		/* original value of varno, for debugging */
 	AttrNumber	varoattno;		/* original value of varattno */
 	int			location;		/* token location, or -1 if unknown */
 } Var;
+/*
+SELECT st.sname FROM STUDENT st WHERE st. sno =
+	ANY (SELECT sno FROM SCORE WHERE st.sno = sno)
+
+上面的查询属性st.sno(列)对应的 var 如下：
+varno = 1,父查询只有一个表STUDENT，所以处在Query->rtable链表的第一个 
+varattno = 1, st.sno 是 STUDENT 表的第 1 列
+vartype = 23 int 类型，参考 pg_type.h
+vartypmod = -1, 无精度
+varlevelsup = 1, 列属性是父查询表STUDENT的列属性
+
+上面的查询属性SCORE.sno(列)对应的 var 如下：
+varno = 1,子查询只有一个表SCORE，所以处在子查询Query->rtable链表的第一个 
+varattno = 1, st.sno 是 SCORE 表的第 1 列
+vartype = 23 int 类型，参考 pg_type.h
+vartypmod = -1, 无精度
+varlevelsup = 0, 列属性是当前询表 SCORE 的列属性
+
+上面的查询属性 st.sname (列)对应的 var 如下：
+varno = 1,父查询只有一个表STUDENT，所以处在Query->rtable链表的第一个 
+varattno = 2, st.sno 是 STUDENT 表的第 2 列
+vartype = 1043 Varchar 类型，参考 pg_type.h
+vartypmod = 14, 创建表时指定Varchar长度是 10 ， 这里的 14包含 了 Header的长度
+varlevelsup = 1, 列属性是当前层次查询表的列属性
+*/
 
 /*
  * Const
@@ -1364,13 +1425,22 @@ typedef struct InferenceElem
  */
 typedef struct TargetEntry
 {
+	// 表达式头部，严格来说TargetEntry 不是一个表达式，因为它不能
+	// 被表达式函数处理，pg 仍然作为表达式，因为很多地方处理起来
+	// 会很方便 
 	Expr		xpr;
+	// 目标属性中需要计算的表达式
 	Expr	   *expr;			/* expression to evaluate */
+	// 属性编号，在 select 目标属性中，resno 对应了属性出现的位置
 	AttrNumber	resno;			/* attribute number (see notes above) */
+	// 属性名
 	char	   *resname;		/* name of the column (could be NULL) */
+	// 被 order by 和 group by 字句应用时使用，> 0 表示被使用
 	Index		ressortgroupref;	/* nonzero if referenced by a sort/group
 									 * clause */
+	// 属性所属的表(源表)的 OID								
 	Oid			resorigtbl;		/* OID of column's source table */
+	// 属性在源表中的属性号		
 	AttrNumber	resorigcol;		/* column's number in source table */
 	bool		resjunk;		/* set to true to eliminate the attribute from
 								 * final target list */
@@ -1417,7 +1487,7 @@ typedef struct TargetEntry
 typedef struct RangeTblRef
 {
 	NodeTag		type;
-	int			rtindex;
+	int			rtindex; // 对应的 RangeTblEntry 在 Query->rtable 中的位置
 } RangeTblRef;
 
 /*----------
@@ -1443,16 +1513,26 @@ typedef struct RangeTblRef
  * no join alias variables referencing such joins.
  *----------
  */
+/*
+A LEFT JOIN B ON Pab 表示两个表的连接关系
+*/
 typedef struct JoinExpr
 {
 	NodeTag		type;
+	// 连接操作的类型，例如可以是 LeftJoin 等
 	JoinType	jointype;		/* type of join */
 	bool		isNatural;		/* Natural join? Will need to shape table */
+	// 连接操作的 LHS （左侧）的表
 	Node	   *larg;			/* left subtree */
+	// 连接操作的阳s （右侧） 的表
 	Node	   *rarg;			/* right subtree */
+	// using 子句	
 	List	   *usingClause;	/* USING clause, if any (list of String) */
+	// on 子句对应的约束条件
 	Node	   *quals;			/* qualifiers on join, if any */
+	// ／连接操作的投影列
 	Alias	   *alias;			/* user-written alias clause, if any */
+	// 这个 JoinExpr 对应的 RangeTblRef->rti ndex，没有则为0
 	int			rtindex;		/* RT index assigned for join, or 0 */
 } JoinExpr;
 

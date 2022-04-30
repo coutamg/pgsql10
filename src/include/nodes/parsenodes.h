@@ -105,61 +105,77 @@ typedef uint32 AclMode;			/* a bitmask of privilege bits */
  */
 typedef struct Query
 {
-	NodeTag		type;
-
+	// 节点的类型, 例如 T_Query
+	NodeTag		type; 
+	// 命令类型
 	CmdType		commandType;	/* select|insert|update|delete|utility */
-
+	// 是原始查询还是来自规则的查询
 	QuerySource querySource;	/* where did I come from? */
 
 	uint32		queryId;		/* query identifier (can be set by plugins) */
-
+	// 查询重写时用到，如果该 Query 是由原始查询转换而来此字段为假，若右查询重写或者
+	// 查询规则时新增加的则为真
 	bool		canSetTag;		/* do I set the command result tag? */
-
+	// 定义游标或不可优化的查询语句
 	Node	   *utilityStmt;	/* non-null if commandType == CMD_UTILITY */
-
+	// 结果关系
 	int			resultRelation; /* rtable index of target relation for
 								 * INSERT/UPDATE/DELETE; 0 for SELECT */
-
+	// 目标属性或者 having 字句中是否有聚集函数
 	bool		hasAggs;		/* has aggregates in tlist or havingQual */
+	// 目标属性是否有窗口函数
 	bool		hasWindowFuncs; /* has window functions in tlist */
 	bool		hasTargetSRFs;	/* has set-returning functions in tlist */
+	// 是否有子查询
 	bool		hasSubLinks;	/* has subquery SubLink */
+	
 	bool		hasDistinctOn;	/* distinctClause is from DISTINCT ON */
+	// 公共表达式是否允许递归
 	bool		hasRecursive;	/* WITH RECURSIVE was specified */
 	bool		hasModifyingCTE;	/* has INSERT/UPDATE/DELETE in WITH */
 	bool		hasForUpdate;	/* FOR [KEY] UPDATE/SHARE was specified */
 	bool		hasRowSecurity; /* rewriter has applied some RLS policy */
-
+	// with 字节，用于公共表达式
 	List	   *cteList;		/* WITH list (of CommonTableExpr's) */
-
+	// 范围表, 在 select 语句中 from 子句中出现的表
 	List	   *rtable;			/* list of range table entries */
+	// 连接树，描述 from 和 where 子句出现的连接
+	// 例如 select ... from a, b, c 则连接树就是 from 中的简单的表，顺序无关
+	// 如果是 join 则与顺序有关
 	FromExpr   *jointree;		/* table join tree (FROM and WHERE clauses) */
-
+	// 目标属性，存放查询结果属性的表达式
+	/*
+		select: 则是 select 和 from 之间的表达式
+		delete: 没有目标属性
+		insert: 是插入到关系元组的属性
+		update: 要被更新的属性
+	*/
 	List	   *targetList;		/* target list (of TargetEntry) */
 
 	OverridingKind override;	/* OVERRIDING clause */
 
 	OnConflictExpr *onConflict; /* ON CONFLICT DO [NOTHING | UPDATE] */
-
+	// returning 子句
 	List	   *returningList;	/* return-values list (of TargetEntry) */
-
+	// group by 子句
 	List	   *groupClause;	/* a list of SortGroupClause's */
 
 	List	   *groupingSets;	/* a list of GroupingSet's if present */
-
+	// having 子句
 	Node	   *havingQual;		/* qualifications applied to groups */
-
+	// 窗口函数子句
 	List	   *windowClause;	/* a list of WindowClause's */
-
+	// distinct 子句
 	List	   *distinctClause; /* a list of SortGroupClause's */
-
+	// sort 子句
 	List	   *sortClause;		/* a list of SortGroupClause's */
 
 	Node	   *limitOffset;	/* # of result tuples to skip (int8 expr) */
+	// limit 子句
 	Node	   *limitCount;		/* # of result tuples to return (int8 expr) */
-
+	// 行标记连标，用于 for update / for share 子句
 	List	   *rowMarks;		/* a list of RowMarkClause's */
-
+	// 集合操作 （union, intersect, except）
 	Node	   *setOperations;	/* set-operation tree if this is top level of
 								 * a UNION/INTERSECT/EXCEPT query */
 
@@ -271,10 +287,15 @@ typedef enum A_Expr_Kind
 typedef struct A_Expr
 {
 	NodeTag		type;
+	// 表达式类型(AND，OR，ANY，IN等)
 	A_Expr_Kind kind;			/* see above */
+	// 操作符名称
 	List	   *name;			/* possibly-qualified name of operator */
+	// 左子表达式
 	Node	   *lexpr;			/* left argument, or NULL if none */
+	// 右子表达式
 	Node	   *rexpr;			/* right argument, or NULL if none */
+	// 符号出现的位置
 	int			location;		/* token location, or -1 if unknown */
 } A_Expr;
 
@@ -432,6 +453,7 @@ typedef struct A_ArrayExpr
  * 'val' is the expression to assign.
  *
  * See A_Indirection for more info about what can appear in 'indirection'.
+ * 具体参考 target 语句解析图
  */
 typedef struct ResTarget
 {
@@ -931,20 +953,32 @@ typedef struct PartitionCmd
  */
 typedef enum RTEKind
 {
+	// 普通表
 	RTE_RELATION,				/* ordinary relation reference */
+	// 子查询
 	RTE_SUBQUERY,				/* subquery in FROM */
+	// JOIN 产生的表
 	RTE_JOIN,					/* join */
+	// 可以作为袤的函数返回的表
 	RTE_FUNCTION,				/* function in FROM */
+	// T阻LE 函数类型的表
 	RTE_TABLEFUNC,				/* TableFunc(.., column list) */
+	// VALUES 表达式产生的表
 	RTE_VALUES,					/* VALUES (<exprlist>), (<exprlist>), ... */
+	// WITH 语句附带的公共表
 	RTE_CTE,					/* common table expr (WITH list element) */
+	// 触发器使用
 	RTE_NAMEDTUPLESTORE			/* tuplestore, e.g. for AFTER triggers */
 } RTEKind;
 
+/* RangeTblEntry （范围表，简称 RTE ）描述了查询中出现的表，它通常出现在查询语
+   句的 FROM 子句中 
+*/
 typedef struct RangeTblEntry
 {
 	NodeTag		type;
 
+	// RTE 的类型，如上
 	RTEKind		rtekind;		/* see above */
 
 	/*
@@ -961,13 +995,18 @@ typedef struct RangeTblEntry
 	 * relation.  This allows plans referencing AFTER trigger transition
 	 * tables to be invalidated if the underlying table is altered.
 	 */
-	Oid			relid;			/* OID of the relation */
+	// 表的 OID 不是 RTE_RELATION 时 relid = 0
+	/* 针对 RTE_RELATION 类型 relid 和 relkind 就是有用的 */
+	Oid			relid;			/* OID of the relation 来自 PG CLASS 系统表 */
+	// 表的类型，来自 PG_CLASS 系统表
 	char		relkind;		/* relation kind (see pg_class.relkind) */
 	struct TableSampleClause *tablesample;	/* sampling info, or NULL */
 
 	/*
 	 * Fields valid for a subquery RTE (else NULL):
 	 */
+	// 子查询的查询树，RTE_SUBQUERY 类型有效
+	// RTE_SUBQUERY, 是一个子查询衍生 RangeTblEntry, relid 和 relkind 无用
 	Query	   *subquery;		/* the sub-query */
 	bool		security_barrier;	/* is from security_barrier view? */
 
@@ -988,7 +1027,9 @@ typedef struct RangeTblEntry
 	 * Also, once planning begins, joinaliasvars items can be almost anything,
 	 * as a result of subquery-flattening substitutions.
 	 */
+	// 连接类型  RTE_JOIN 时有效
 	JoinType	jointype;		/* type of join */
+	// JOIN （连接）的表的所有列的集合
 	List	   *joinaliasvars;	/* list of alias-var expansions */
 
 	/*
@@ -999,6 +1040,7 @@ typedef struct RangeTblEntry
 	 * implicit, and must be accounted for "by hand" in places such as
 	 * expandRTE().
 	 */
+	// 函数表达式树
 	List	   *functions;		/* list of RangeTblFunction nodes */
 	bool		funcordinality; /* is this called WITH ORDINALITY? */
 
@@ -1010,13 +1052,17 @@ typedef struct RangeTblEntry
 	/*
 	 * Fields valid for a values RTE (else NIL):
 	 */
+	// values 表达式
 	List	   *values_lists;	/* list of expression lists */
 
 	/*
 	 * Fields valid for a CTE RTE (else NULL/zero):
 	 */
+	// 公共表达式名称
 	char	   *ctename;		/* name of the WITH list item */
+	// 公共表达式的级别
 	Index		ctelevelsup;	/* number of query levels up */
+	// 是否递归自我引用
 	bool		self_reference; /* is this a recursive self-reference? */
 
 	/*
@@ -1035,7 +1081,9 @@ typedef struct RangeTblEntry
 	 * all three lists (as well as an empty-string entry in eref).  Testing
 	 * for zero coltype is the standard way to detect a dropped column.
 	 */
+	// CTE 返回记录中属性类型的 OID 列表
 	List	   *coltypes;		/* OID list of column type OIDs */
+	// CTE 返回记录中属性类型的 typmods 列表
 	List	   *coltypmods;		/* integer list of column typmods */
 	List	   *colcollations;	/* OID list of column collation OIDs */
 
@@ -1048,18 +1096,46 @@ typedef struct RangeTblEntry
 	/*
 	 * Fields valid in all RTEs:
 	 */
+	// 用户定义的别名
 	Alias	   *alias;			/* user-written alias clause, if any */
 	Alias	   *eref;			/* expanded reference names */
 	bool		lateral;		/* subquery, function, or values is LATERAL? */
+	// 是否需要继承
 	bool		inh;			/* inheritance requested? */
 	bool		inFromCl;		/* present in FROM clause? */
 	AclMode		requiredPerms;	/* bitmask of required access permissions */
 	Oid			checkAsUser;	/* if valid, check access as this role */
+	// 需要select 权限的属性集合
 	Bitmapset  *selectedCols;	/* columns needing SELECT permission */
 	Bitmapset  *insertedCols;	/* columns needing INSERT permission */
 	Bitmapset  *updatedCols;	/* columns needing UPDATE permission */
 	List	   *securityQuals;	/* security barrier quals to apply, if any */
 } RangeTblEntry;
+/*
+SELECT * FROM STUDENT LEFT JOIN SCORE ON TRUE , 
+			(SELECT* FROM TEACHER) AS t ,
+			COURSE , 
+			(VALUES (1, 1)) AS NUM(x , y) , 
+			GENERATE_SERIES(1 , 10) AS GS(z);
+RangeTblEntry 如下：
+	RTE_RELATION: COURSE
+	RTE_JOIN	: STUDENT LEFT JOIN SCORE ON TRUE
+	RTE_SUBQUERY: (SELECT *FROM TEACHER)
+	RTE_FUNCTION: GENERATE_SERIES(1,10) AS GS(z)
+	RTE_VALUES	: (VALUES (1, 1)) AS NUM(x , y)
+
+RangeTblEntry 在 query->rtable 中链表内容：
+
+			 +------------- var->varno ---------------+
+			\|/      								  |       
+	RTE_RELATION(STUDENT) | RTE_RELATION(COURSE) | RTE_JOIN | RTE_SUBQUERY | 
+	RTE_RELATION(COURSE) | RTE_VALUES | RTE_FUNCTION              |
+																 \|/
+							RTE_RELATION(TEACHER)-- rtable --> 子Query
+
+RTE_JOIN 的 RangeTblEntry 保存的是 STUDENT 和 SCORE 表中的投影的 Var, vamo == 1 代
+表是 STUDENT 表中的列， vano == 2 代表是 SCORE 表中的列
+*/
 
 /*
  * RangeTblFunction -

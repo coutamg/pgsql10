@@ -167,23 +167,35 @@ typedef Node *(*CoerceParamHook) (ParseState *pstate, Param *param,
  */
 struct ParseState
 {
+	// 当前是一个子查询是，则指向外层的查询
 	struct ParseState *parentParseState;	/* stack link */
+	// 原始 sql 命令，只用于报告语法分析出错的位置
 	const char *p_sourcetext;	/* source text, or NULL if not available */
+	// 查询涉及的表，成为范围表
 	List	   *p_rtable;		/* range table so far */
+	// 连接表达式
 	List	   *p_joinexprs;	/* JoinExprs for RTE_JOIN p_rtable entries */
+	// 连接项
 	List	   *p_joinlist;		/* join items so far (will become FromExpr
 								 * node's fromlist) */
+	// 表名字集合，用于检查表名冲突
 	List	   *p_namespace;	/* currently-referenceable RTEs (List of
 								 * ParseNamespaceItem) */
 	bool		p_lateral_active;	/* p_lateral_only items visible? */
+	// 公共表达式的集合
 	List	   *p_ctenamespace; /* current namespace for common table exprs */
+	// 不在 p_ctenamespace 中的公共表达式
 	List	   *p_future_ctes;	/* common table exprs not yet in namespace */
 	CommonTableExpr *p_parent_cte;	/* this query's containing CTE */
+	// 目标表
 	Relation	p_target_relation;	/* INSERT/UPDATE/DELETE target rel */
+	// 目标表在 RangeTable 中对应的项
 	RangeTblEntry *p_target_rangetblentry;	/* target rel's RTE */
+	// 是否为 INSERT 语句
 	bool		p_is_insert;	/* process assignment like INSERT not UPDATE */
 	List	   *p_windowdefs;	/* raw representations of window clauses */
 	ParseExprKind p_expr_kind;	/* what kind of expression we're parsing */
+	// 下一个要被分配给目标属性的资源号
 	int			p_next_resno;	/* next targetlist resno to assign */
 	List	   *p_multiassign_exprs;	/* junk tlist entries for multiassign */
 	List	   *p_locking_clause;	/* raw FOR UPDATE/FOR SHARE info */
@@ -198,6 +210,7 @@ struct ParseState
 	bool		p_hasAggs;
 	bool		p_hasWindowFuncs;
 	bool		p_hasTargetSRFs;
+	// 是否右子连接
 	bool		p_hasSubLinks;
 	bool		p_hasModifyingCTE;
 

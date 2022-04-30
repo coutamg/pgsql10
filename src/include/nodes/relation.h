@@ -152,12 +152,13 @@ typedef struct PlannerInfo
 {
 	NodeTag		type;
 
+	// 要生成计划的查询树
 	Query	   *parse;			/* the Query being planned */
-
+	// 规划器当前运行状态的全局信息
 	PlannerGlobal *glob;		/* global info for current planner run */
-
+	// 当前查询的层次，最外层为 1
 	Index		query_level;	/* 1 at the outermost Query */
-
+	// 根节点的生成计划信息
 	struct PlannerInfo *parent_root;	/* NULL at outermost Query */
 
 	/*
@@ -176,7 +177,9 @@ typedef struct PlannerInfo
 	 * does not correspond to a base relation, such as a join RTE or an
 	 * unreferenced view RTE; or if the RelOptInfo hasn't been made yet.
 	 */
+	// 基本关系的信息，生成路径是用到
 	struct RelOptInfo **simple_rel_array;	/* All 1-rel RelOptInfos */
+	// simple_rel_array 数组的 size
 	int			simple_rel_array_size;	/* allocated size of array */
 
 	/*
@@ -185,6 +188,7 @@ typedef struct PlannerInfo
 	 * rt_fetch(), which can be a bit slow once large inheritance sets have
 	 * been expanded.
 	 */
+	// 范围表
 	RangeTblEntry **simple_rte_array;	/* rangetable as an array */
 
 	/*
@@ -212,7 +216,9 @@ typedef struct PlannerInfo
 	 * even when using the hash table for lookups; this simplifies life for
 	 * GEQO.
 	 */
+	// 进行连接操作的表的信息
 	List	   *join_rel_list;	/* list of join-relation RelOptInfos */
+	// 进行连接操作的表的 hash 表，当表很多时，可以加快查找
 	struct HTAB *join_rel_hash; /* optional hashtable for join relations */
 
 	/*
@@ -224,31 +230,31 @@ typedef struct PlannerInfo
 	 */
 	List	  **join_rel_level; /* lists of join-relation RelOptInfos */
 	int			join_cur_level; /* index of list being extended */
-
+	// 查询的初始子计划
 	List	   *init_plans;		/* init SubPlans for query */
-
+	// CTE 子计划
 	List	   *cte_plan_ids;	/* per-CTE-item list of subplan IDs */
 
 	List	   *multiexpr_params;	/* List of Lists of Params for MULTIEXPR
 									 * subquery outputs */
-
+	// 等值连接的 PathKeyItems 链表
 	List	   *eq_classes;		/* list of active EquivalenceClasses */
-
+	// 规范化的 PathKeys 链表
 	List	   *canon_pathkeys; /* list of "canonical" PathKeys */
-
+	// 左外连接的 RestrictInfo 结构
 	List	   *left_join_clauses;	/* list of RestrictInfos for mergejoinable
 									 * outer join clauses w/nonnullable var on
 									 * left */
-
+	// 右外连接的 RestrictInfo 结构							
 	List	   *right_join_clauses; /* list of RestrictInfos for mergejoinable
 									 * outer join clauses w/nonnullable var on
 									 * right */
-
+    // 全连接的 RestrictInfo 结构
 	List	   *full_join_clauses;	/* list of RestrictInfos for mergejoinable
 									 * full join clauses */
 
 	List	   *join_info_list; /* list of SpecialJoinInfos */
-
+	// 追加表的信息
 	List	   *append_rel_list;	/* list of AppendRelInfos */
 
 	List	   *pcinfo_list;	/* list of PartitionedChildRelInfos */
@@ -259,13 +265,13 @@ typedef struct PlannerInfo
 
 	List	   *fkey_list;		/* list of ForeignKeyOptInfos */
 
-	List	   *query_pathkeys; /* desired pathkeys for query_planner() */
-
+	List	   *query_pathkeys; /* desired(需要) pathkeys for query_planner() */
+	// group 字句的 pathkeys
 	List	   *group_pathkeys; /* groupClause pathkeys, if any */
 	List	   *window_pathkeys;	/* pathkeys of bottom window, if any */
 	List	   *distinct_pathkeys;	/* distinctClause pathkeys, if any */
 	List	   *sort_pathkeys;	/* sortClause pathkeys, if any */
-
+	// 进行连接操作之前的初始表
 	List	   *initial_rels;	/* RelOptInfos we are now trying to join */
 
 	/* Use fetch_upper_rel() to get any particular upper rel */
@@ -283,11 +289,11 @@ typedef struct PlannerInfo
 	/* Fields filled during create_plan() for use in setrefs.c */
 	AttrNumber *grouping_map;	/* for GroupingFunc fixup */
 	List	   *minmax_aggs;	/* List of MinMaxAggInfos */
-
+	// 规划器的内存上下文信息
 	MemoryContext planner_cxt;	/* context holding PlannerInfo */
-
+	// 所有表的页数
 	double		total_table_pages;	/* # of pages in all tables of query */
-
+	// 元组数
 	double		tuple_fraction; /* tuple_fraction passed to query_planner */
 	double		limit_tuples;	/* limit_tuples passed to query_planner */
 
@@ -296,16 +302,21 @@ typedef struct PlannerInfo
 
 	bool		hasInheritedTarget; /* true if parse->resultRelation is an
 									 * inheritance child rel */
+	// 范围表是否为连接类型
 	bool		hasJoinRTEs;	/* true if any RTEs are RTE_JOIN kind */
 	bool		hasLateralRTEs; /* true if any RTEs are marked LATERAL */
 	bool		hasDeletedRTEs; /* true if any RTE was deleted from jointree */
+	// 是否有连接子句
 	bool		hasHavingQual;	/* true if havingQual was non-null */
 	bool		hasPseudoConstantQuals; /* true if any RestrictInfo has
 										 * pseudoconstant = true */
+	// with 子句允许机柜处理
 	bool		hasRecursion;	/* true if planning a recursive WITH item */
 
 	/* These fields are used only when hasRecursion is true: */
+	// 工作表的 PARAM_EXEC ID
 	int			wt_param_id;	/* PARAM_EXEC ID for the work table */
+	// 非递归计划
 	struct Path *non_recursive_path;	/* a path for non-recursive term */
 
 	/* These fields are workspace for createplan.c */

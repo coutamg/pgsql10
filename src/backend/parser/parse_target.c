@@ -127,6 +127,7 @@ transformTargetEntry(ParseState *pstate,
  * the main thing is to transform the given expressions (the "val" fields).
  * The exprKind parameter distinguishes these cases when necessary.
  */
+// 目标属性的语义分析处理
 List *
 transformTargetList(ParseState *pstate, List *targetlist,
 					ParseExprKind exprKind)
@@ -155,10 +156,11 @@ transformTargetList(ParseState *pstate, List *targetlist,
 			if (IsA(res->val, ColumnRef))
 			{
 				ColumnRef  *cref = (ColumnRef *) res->val;
-
+				// ResTarget->val 是一个 *
 				if (IsA(llast(cref->fields), A_Star))
 				{
 					/* It is something.*, expand into multiple items */
+					// 把 * 拓展成指代的一系列属性，并为没一个属性创建 targetEntry
 					p_target = list_concat(p_target,
 										   ExpandColumnRefStar(pstate,
 															   cref,
@@ -187,6 +189,7 @@ transformTargetList(ParseState *pstate, List *targetlist,
 		 * Not "something.*", or we want to treat that as a plain whole-row
 		 * variable, so transform as a single expression
 		 */
+		// 处理目标属性的每一项，将 ResTarget 转换为 TargetEntry 链表
 		p_target = lappend(p_target,
 						   transformTargetEntry(pstate,
 												res->val,

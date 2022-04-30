@@ -38,10 +38,12 @@
  * (We do use canSetTag, stmt_location, stmt_len, and possibly queryId.)
  * ----------------
  */
+// subquery_planner 接受到 Query 树后返回 Plan(计划树)
+// 计划树的结构如 PlannedStmt
 typedef struct PlannedStmt
 {
 	NodeTag		type;
-
+	// 计划所对应的命令类型
 	CmdType		commandType;	/* select|insert|update|delete|utility */
 
 	uint32		queryId;		/* query identifier (copied from Query) */
@@ -49,20 +51,21 @@ typedef struct PlannedStmt
 	bool		hasReturning;	/* is it insert|update|delete RETURNING? */
 
 	bool		hasModifyingCTE;	/* has insert|update|delete in WITH? */
-
+	// 是否许哟啊设置命令结果标志
 	bool		canSetTag;		/* do I set the command result tag? */
-
+	// 当 transactionXmin 改变时
 	bool		transientPlan;	/* redo plan when TransactionXmin changes? */
 
 	bool		dependsOnRole;	/* is plan specific to current role? */
 
 	bool		parallelModeNeeded; /* parallel mode required to execute? */
-
+	// 计划树
 	struct Plan *planTree;		/* tree of Plan nodes */
-
+	// 范围表
 	List	   *rtable;			/* list of RangeTblEntry nodes */
 
 	/* rtable indexes of target relations for INSERT/UPDATE/DELETE */
+	// 计划中的结果关系，由结果关系的 RTE 索引构成
 	List	   *resultRelations;	/* integer list of RT indexes, or NIL */
 
 	/*
@@ -77,20 +80,21 @@ typedef struct PlannedStmt
 	 * indicating the roots of the respective partition hierarchies.
 	 */
 	List	   *rootResultRelations;
-
+	// 子计划
 	List	   *subplans;		/* Plan trees for SubPlan expressions; note
 								 * that some could be NULL */
 
 	Bitmapset  *rewindPlanIDs;	/* indices of subplans that require REWIND */
-
+	// 用于 SELECT FRO UPDATE 等
 	List	   *rowMarks;		/* a list of PlanRowMark's */
-
+	// 该计划所依赖的表的 OID
 	List	   *relationOids;	/* OIDs of relations the plan depends on */
-
+	// 计划所依赖的其他队形，用 PlanInvalItem 结构表示，其中记录了
+	// 被依赖的对象所属的 SysCache 的 ID 以及其对应的系统表元组的 TID
 	List	   *invalItems;		/* other dependencies, as PlanInvalItems */
-
+	// 计划所需要的参数数目
 	int			nParamExec;		/* number of PARAM_EXEC Params used */
-
+	// 定义游标时用来记录游标定义语句的分析树
 	Node	   *utilityStmt;	/* non-null if this is utility stmt */
 
 	/* statement location in source string (copied from Query) */
@@ -122,13 +126,17 @@ typedef struct Plan
 	/*
 	 * estimated execution costs for plan (see costsize.c for more info)
 	 */
+	// 获取任何元组之前的代价，称为启动代价
 	Cost		startup_cost;	/* cost expended before fetching any tuples */
+	// 总代价（假设所有的元组都已经获取）
 	Cost		total_cost;		/* total cost (assuming all tuples fetched) */
 
 	/*
 	 * planner's estimate of result size of this plan step
 	 */
+	// 计划期望获取的元组数
 	double		plan_rows;		/* number of rows plan is expected to emit */
+	// 行的平局字节宽度
 	int			plan_width;		/* average row width in bytes */
 
 	/*
@@ -141,10 +149,15 @@ typedef struct Plan
 	 * Common structural data for all Plan types.
 	 */
 	int			plan_node_id;	/* unique across entire final plan tree */
+	// 该节点中需要计算的目标属性的链表
 	List	   *targetlist;		/* target list to be computed at this node */
+	// 查询条件
 	List	   *qual;			/* implicitly-ANDed qual conditions */
+	// 当前计划节点的左子树
 	struct Plan *lefttree;		/* input plan tree(s) */
+	// 当前计划节点的右子树
 	struct Plan *righttree;
+	// 初始计划节点，非相关子查询
 	List	   *initPlan;		/* Init Plan nodes (un-correlated expr
 								 * subselects) */
 
@@ -159,7 +172,9 @@ typedef struct Plan
 	 * params that affect the node (i.e., the setParams of its initplans).
 	 * These are _all_ the PARAM_EXEC params that affect this node.
 	 */
+	// 子计划用到的所有外部参数，比如相关子计划从父计划得到的参数
 	Bitmapset  *extParam;
+	// 所有参数
 	Bitmapset  *allParam;
 } Plan;
 

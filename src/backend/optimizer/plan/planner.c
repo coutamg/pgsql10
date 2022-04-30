@@ -199,6 +199,8 @@ static void adjust_paths_for_srfs(PlannerInfo *root, RelOptInfo *rel,
  * so you'd better copy that data structure if you want to plan more than once.
  *
  *****************************************************************************/
+// 优化器的入口函数，输入 经过重写器处理的查询树，输出 最优的执行计划（连接的表较多时，为近似
+//  最优）
 PlannedStmt *
 planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
@@ -206,11 +208,28 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 
 	if (planner_hook)
 		result = (*planner_hook) (parse, cursorOptions, boundParams);
-	else
+	else // 标准的规划处理，可定制
 		result = standard_planner(parse, cursorOptions, boundParams);
 	return result;
 }
 
+/*
+	parse：一个 Query ，表示需要处理的查询树
+	cursorOptions：游标选项，处理与游标操作时用到
+		CURSOR_OPT_BINARY 		以二进制形式而不是文本返回结果
+		CURSOR_OPT_SCROLL		允许以非顺序的方式返回结果
+		CURSOR_OPT_NO_SCROLL	不允许以非顺序的方式返回结果
+		CURSOR_OPT_INSENSITIVE	游标建立之后对其所在表上的更新操作不会影响游标结果
+		CURSOR_OPT_HOLD			把游标一直保持，即使创建它的事务在提交之后仍然可以使用
+		CURSOR_OPT_FAST_PLAN	创建一个快速启动的计划
+		CURSOR_OPT_GENERIC_PLAN
+		CURSOR_OPT_CUSTOM_PLAN
+		CURSOR_OPT_PARALLEL_OK
+	boundParams：记录了所用到的参数信息
+
+	一般情况下 cursorOptions，boundParams 均为空值
+
+*/
 PlannedStmt *
 standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
@@ -303,6 +322,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		(force_parallel_mode != FORCE_PARALLEL_OFF);
 
 	/* Determine what fraction of the plan is likely to be scanned */
+	// 判断扫描元组的比例
 	if (cursorOptions & CURSOR_OPT_FAST_PLAN)
 	{
 		/*
@@ -312,6 +332,8 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		 * process some of the tuples sooner.  Use a GUC parameter to decide
 		 * what fraction to optimize for.
 		 */
+		// tuple_fraction 记录扫描的比例, 为 0 时扫描所欲元组
+		// cursor_tuple_fraction GUC 参数， 默认时 0.1
 		tuple_fraction = cursor_tuple_fraction;
 
 		/*
@@ -331,6 +353,10 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	}
 
 	/* primary planning entry point (may recurse for subqueries) */
+	// 创建计划，处理优化的主体函数，可递归处理子查询
+	// 1. 消除冗余条件，减少查询层次，假话路径生成
+	// 2. 调用 inheritance_planner 或 grouping_planner 生成计划流程，该过程
+	//    不对查询树做出实质性改变
 	root = subquery_planner(glob, parse, NULL,
 							false, tuple_fraction);
 
@@ -346,6 +372,8 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	 */
 	if (cursorOptions & CURSOR_OPT_SCROLL)
 	{
+		// 存在 CURSOR_OPT_SCROLL 且计划类型不支持反向执行时，即该计划不支持
+		// 游标的非顺序返回元组，则添加物化节点（将产生的元组全部缓存）
 		if (!ExecSupportsBackwardScan(top_plan))
 			top_plan = materialize_finished_plan(top_plan);
 	}
@@ -416,6 +444,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	Assert(glob->resultRelations == NIL);
 	Assert(glob->nonleafResultRelations == NIL);
 	Assert(glob->rootResultRelations == NIL);
+	// 完成生成执行计划后的清理工作，执行计划做相应的变量调整，不对计划本质产生改变
 	top_plan = set_plan_references(root, top_plan);
 	/* ... and the subplans (both regular subplans and initplans) */
 	Assert(list_length(glob->subplans) == list_length(glob->subroots));
@@ -428,6 +457,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	}
 
 	/* build the PlannedStmt result */
+	// 创建 PlannedStmt，填入相应的变量
 	result = makeNode(PlannedStmt);
 
 	result->commandType = parse->commandType;
@@ -487,9 +517,12 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
  *--------------------
  */
 PlannerInfo *
-subquery_planner(PlannerGlobal *glob, Query *parse,
-				 PlannerInfo *parent_root,
-				 bool hasRecursion, double tuple_fraction)
+subquery_planner(PlannerGlobal *glob, // 记录做计划期间的全局信息，例如子计划，子计划
+									  // 的范围表等，每条查询语句只有一个该变量
+				 Query *parse,	// 指向要生成计划的查询树
+				 PlannerInfo *parent_root, // 指向父查询的规划器信息(首次为空)
+				 bool hasRecursion, // 正在处理的是一个递归的 WITH 查询时为 true
+				 double tuple_fraction) // 表示计划扫描元组的比例
 {
 	PlannerInfo *root;
 	List	   *newWithCheckOptions;
@@ -522,7 +555,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->qual_security_level = 0;
 	root->hasInheritedTarget = false;
 	root->hasRecursion = hasRecursion;
-	if (hasRecursion)
+	if (hasRecursion) // 为子查询创建一个 worktable，把标志符放在 wt_param_id 中
 		root->wt_param_id = SS_assign_special_param(root);
 	else
 		root->wt_param_id = -1;
@@ -541,6 +574,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	 * into subqueries; if we pull up any subqueries below, their SubLinks are
 	 * processed just before pulling them up.
 	 */
+	// 提升子连接
 	if (parse->hasSubLinks)
 		pull_up_sublinks(root);
 
@@ -555,6 +589,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	 * Check to see if any subqueries in the jointree can be merged into this
 	 * query.
 	 */
+	// 提升子查询
 	pull_up_subqueries(root);
 
 	/*
@@ -576,6 +611,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->hasJoinRTEs = false;
 	root->hasLateralRTEs = false;
 	hasOuterJoins = false;
+	// 根据查询树的范围表确定相关信息ßß
 	foreach(l, parse->rtable)
 	{
 		RangeTblEntry *rte = (RangeTblEntry *) lfirst(l);
@@ -624,6 +660,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	 * handle sort/group expressions explicitly, because they are actually
 	 * part of the targetlist.
 	 */
+	// 对查询树的 targetlist，returninglist，havingQual，limitOffset，limitCount
+	// 等字段进行处理，同时也对范围表进行预处理
 	parse->targetList = (List *)
 		preprocess_expression(root, (Node *) parse->targetList,
 							  EXPRKIND_TARGET);
@@ -647,7 +685,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	parse->returningList = (List *)
 		preprocess_expression(root, (Node *) parse->returningList,
 							  EXPRKIND_TARGET);
-
+	// 预处理约束条件，如果约束条件中存在子连接/子查询，则递归调用 subquery_planner
 	preprocess_qual_conditions(root, (Node *) parse->jointree);
 
 	parse->havingQual = preprocess_expression(root, parse->havingQual,
@@ -803,7 +841,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 			newHaving = lappend(newHaving, havingclause);
 		}
 		else if (parse->groupClause && !parse->groupingSets)
-		{
+		{  // having 提升到 where 条件中
 			/* move it to WHERE */
 			parse->jointree->quals = (Node *)
 				lappend((List *) parse->jointree->quals, havingclause);
@@ -827,6 +865,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	 * This step is most easily done after we've done expression
 	 * preprocessing.
 	 */
+	// 简化简单的内连接
 	if (hasOuterJoins)
 		reduce_outer_joins(root);
 
@@ -834,10 +873,11 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	 * Do the main planning.  If we have an inherited target relation, that
 	 * needs special processing, else go straight to grouping_planner.
 	 */
+	// inheritance_planner 存在继承表的规划处理
 	if (parse->resultRelation &&
 		rt_fetch(parse->resultRelation, parse->rtable)->inh)
 		inheritance_planner(root);
-	else
+	else // 不存在继承表的规划处理
 		grouping_planner(root, false, tuple_fraction);
 
 	/*

@@ -615,7 +615,7 @@ pg_parse_query(const char *query_string)
 	if (log_parser_stats)
 		ResetUsage();
 
-	// 词法与语法分析
+	// 词法与语法分析, raw_parsetree_list 是一颗语法树
 	raw_parsetree_list = raw_parser(query_string);
 
 	if (log_parser_stats)
@@ -648,6 +648,9 @@ pg_parse_query(const char *query_string)
  *
  * NOTE: for reasons mentioned above, this must be separate from raw parsing.
  */
+// 用 pt_rewrite 表中存储的规则进行重写
+// 参考 http://www.postgres.cn/docs/9.5/rules-views.html
+// 参考 https://www.cnblogs.com/flying-tiger/p/6048735.html
 List *
 pg_analyze_and_rewrite(RawStmt *parsetree, const char *query_string,
 					   Oid *paramTypes, int numParams,
@@ -663,7 +666,7 @@ pg_analyze_and_rewrite(RawStmt *parsetree, const char *query_string,
 	 */
 	if (log_parser_stats)
 		ResetUsage();
-
+	// 生成查询树
 	query = parse_analyze(parsetree, query_string, paramTypes, numParams,
 						  queryEnv);
 
@@ -943,9 +946,11 @@ exec_simple_query(const char *query_string)
 	 * Do basic parsing of the query or queries (this should be safe even if
 	 * we are in aborted transaction state!)
 	 */
+	// 词法分析
 	parsetree_list = pg_parse_query(query_string);
 
 	/* Log immediately if dictated by log_statement */
+	// 打印 parse 后的分析树
 	if (check_log_statement(parsetree_list))
 	{
 		ereport(LOG,
@@ -1035,9 +1040,10 @@ exec_simple_query(const char *query_string)
 		 */
 		oldcontext = MemoryContextSwitchTo(MessageContext);
 
+		// 语义分析和查询重写，在 analyze.c 中
 		querytree_list = pg_analyze_and_rewrite(parsetree, query_string,
 												NULL, 0, NULL);
-
+		// 参考 https://www.cnblogs.com/flying-tiger/p/6063709.html
 		plantree_list = pg_plan_queries(querytree_list,
 										CURSOR_OPT_PARALLEL_OK, NULL);
 

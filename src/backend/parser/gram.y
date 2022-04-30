@@ -11387,7 +11387,7 @@ values_clause:
  *		where_clause	- qualifications for joins or restrictions
  *
  *****************************************************************************/
-
+/* from_clause 由 from_list 组成 */
 from_clause:
 			FROM from_list							{ $$ = $2; }
 			| /*EMPTY*/								{ $$ = NIL; }
@@ -11400,6 +11400,7 @@ from_list:
 
 /*
  * table_ref is where an alias clause can be attached.
+ * table_ref 中最简单和基本的就是 relation_expr，语法见下
  */
 table_ref:	relation_expr opt_alias_clause
 				{
@@ -11824,7 +11825,7 @@ opt_ordinality: WITH_LA ORDINALITY					{ $$ = true; }
 			| /*EMPTY*/								{ $$ = false; }
 		;
 
-
+/* where 的递归定义 */
 where_clause:
 			WHERE a_expr							{ $$ = $2; }
 			| /*EMPTY*/								{ $$ = NULL; }
@@ -12528,6 +12529,7 @@ interval_second:
  * last terminal, but in nearly all cases you want it to be the precedence
  * of the first terminal instead; otherwise you will not get the behavior
  * you expect!  So we use %prec annotations freely to set precedences.
+ * 对应 parsenodes 中的 struct A_Expr
  */
 a_expr:		c_expr									{ $$ = $1; }
 			| a_expr TYPECAST Typename

@@ -97,7 +97,9 @@ parse_analyze(RawStmt *parseTree, const char *sourceText,
 			  Oid *paramTypes, int numParams,
 			  QueryEnvironment *queryEnv)
 {
+	// 记录语义分析的中间信息
 	ParseState *pstate = make_parsestate(NULL);
+	// 存储查询树
 	Query	   *query;
 
 	Assert(sourceText != NULL); /* required as of 8.4 */
@@ -109,6 +111,7 @@ parse_analyze(RawStmt *parseTree, const char *sourceText,
 
 	pstate->p_queryEnv = queryEnv;
 
+	// 语义分析
 	query = transformTopLevelStmt(pstate, parseTree);
 
 	if (post_parse_analyze_hook)
@@ -207,11 +210,14 @@ transformTopLevelStmt(ParseState *pstate, RawStmt *parseTree)
  * of the parse tree, and so we only try it before entering the recursive
  * transformStmt() processing.
  */
+// 打印查询树到日志
+// postgresql.conf 修改 debug_print_parse, debug_print_rewritten, debug_print_plan
 static Query *
 transformOptionalSelectInto(ParseState *pstate, Node *parseTree)
 {
 	if (IsA(parseTree, SelectStmt))
 	{
+		// node 强制转换为 select
 		SelectStmt *stmt = (SelectStmt *) parseTree;
 
 		/* If it's a set-operation tree, drill down to leftmost SelectStmt */
@@ -1182,7 +1188,7 @@ transformSelectStmt(ParseState *pstate, SelectStmt *stmt)
 	Query	   *qry = makeNode(Query);
 	Node	   *qual;
 	ListCell   *l;
-
+	// 构建一个新的 Query
 	qry->commandType = CMD_SELECT;
 
 	/* process the WITH clause independently of all else */
