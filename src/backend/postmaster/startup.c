@@ -214,6 +214,7 @@ StartupProcessMain(void)
 	/*
 	 * Do what we came for.
 	 */
+	// xlog 的recovery
 	StartupXLOG();
 
 	/*

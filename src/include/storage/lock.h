@@ -175,6 +175,7 @@ extern const char *const LockTagTypeNames[];
  * We include lockmethodid in the locktag so that a single hash table in
  * shared memory can store locks of different lockmethods.
  */
+// LOCKTAG 结构体中的成员变量没有特定的含义，它们的含义完全取决于使用者
 typedef struct LOCKTAG
 {
 	uint32		locktag_field1; /* a 32-bit ID field */
@@ -184,7 +185,7 @@ typedef struct LOCKTAG
 	uint8		locktag_type;	/* see enum LockTagType */
 	uint8		locktag_lockmethodid;	/* lockmethod indicator */
 } LOCKTAG;
-
+// 见 lock-LOCKTAG.png
 /*
  * These macros define how we map logical IDs of lockable objects into
  * the physical fields of LOCKTAG.  Use these to set up LOCKTAG values,
@@ -281,18 +282,61 @@ typedef struct LOCKTAG
  * there may be multiple grabs on a particular lock, but this is not reflected
  * into shared memory.
  */
+/*
+tag - 
+    该键域用于标记共享内存lock哈希表中的hashing locks.标记tag的内容本质上定义了
+    一个独立的可锁定对象.关于已支持的可锁定对象类型的详细信息可参考include/storage/lock.h.
+    之所以定义为一个单独的结构是为了确保能够把归零正确的字节数.
+    编译器可能插入到结构体中的所有对齐字节数正确被归零是很很重要的,否则的话哈希的计算会是随机的.
+	(当前来看,定义结构体LOCKTAG以避免对齐字节)
+grantMask -
+    该bitmask表示在给定的可锁定对象上持有了哪些类型的locks.
+    该字段用于确定新申请的锁是否会与现存的锁存在冲突.
+    冲突通过 grantMask 和请求锁类型的冲突表条目的 bitwise AND操作实现.
+waitMask -
+    该字段标记了正在等待的锁类型.当且仅当requested[i] > granted[i],waitMask中的第1位为1.
+procLocks -
+    与 lock object 相关的 PROCLOCK 结构体在共享内存中的队列.
+    注意链表中存在 granted 和 waiting PROCLOCKs.
+    (实际上,同一个 PROCLOCK 可能有已授予的locks但正在等待更多的锁) 
+waitProcs -
+    对应等待其他后台进程释放锁的后台进程的 PGPROC 结构体在共享内存中的队列.
+    进程结构体保存了用于确定在锁释放时是否需要唤醒的相关信息.
+nRequested -
+    该字段保存了尝试获取该锁的次数.计数包括因为冲突而处于休眠状态的次数.
+    如果一个进程第一次请求读然后请求写时可能会导致该进程被多次统计. 
+requested -
+    该字段保存了尝试获取多少种锁类型.只有1 -> MAX_LOCKMODES-1被使用,因为这对应了锁类型常量.
+    计算requested数组的和应等于nRequested. 
+nGranted -
+    成功获取该锁的次数.该计数不包括因为冲突而等待的次数.因此该计数规则与nRequested一样.
+granted -
+    保存每种类型有多少锁.1 -> MAX_LOCKMODES-1是有用的.
+    与requested类似,granted[]数组的和应等于nGranted.
+nGranted的的范围为[0,nRequested],对于每一个granted[i]范围为[0,requested[i]].
+如果所有请求变为0,那么LOCK对象不再需要,会通过free释放.
+*/
+// 加锁函数 LockAcquire
 typedef struct LOCK
 {
 	/* hash key */
+	// 锁对象的唯一 ID
 	LOCKTAG		tag;			/* unique identifier of lockable object */
 
 	/* data */
+	// 对象被持有的锁模式
 	LOCKMASK	grantMask;		/* bitmask for lock types already granted */
+	// 等待队列中的请求想要持有这个锁的模式
 	LOCKMASK	waitMask;		/* bitmask for lock types awaited */
+	// 这个锁上所有 PROCLOCK
 	SHM_QUEUE	procLocks;		/* list of PROCLOCK objects assoc. with lock */
+	// 等在这个锁上的 PGPROC
 	PROC_QUEUE	waitProcs;		/* list of PGPROC objects waiting on lock */
+	// 记录持有和等待该锁的会话数
 	int			requested[MAX_LOCKMODES];	/* counts of requested locks */
+	// requested 数组的和
 	int			nRequested;		/* total of requested[] array */
+	// 记录已持有的会话数
 	int			granted[MAX_LOCKMODES]; /* counts of granted locks */
 	int			nGranted;		/* total of granted[] array */
 } LOCK;
@@ -334,6 +378,10 @@ typedef struct LOCK
  * granted.  A PGPROC that is waiting for a lock to be granted will also be
  * linked into the lock's waitProcs queue.
  */
+/*
+  进程锁表被用来保存当前进程（会话）的事务锁的状态，它保存的是PROCLOCK结构体，
+  这个结构体的主要作用就是建立锁和会话（锁的申请者）的关系
+*/
 typedef struct PROCLOCKTAG
 {
 	/* NB: we assume this struct contains no padding! */
@@ -343,14 +391,19 @@ typedef struct PROCLOCKTAG
 
 typedef struct PROCLOCK
 {
-	/* tag */
+	/* tag PROCLOCK的唯一 ID*/
 	PROCLOCKTAG tag;			/* unique identifier of proclock object */
 
 	/* data */
+	// 并行执行时，并行会话的leader
 	PGPROC	   *groupLeader;	/* proc's lock group leader, or proc itself */
+	// 当前会话在这个对象上持有的锁模式
 	LOCKMASK	holdMask;		/* bitmask for lock types currently held */
+	// lockReleaseAll 专用，记录需要释放的锁模式
 	LOCKMASK	releaseMask;	/* bitmask for lock types to be released */
+	// LOCK 结构体中的 procLocks 记录了这个 PROCLOCK
 	SHM_QUEUE	lockLink;		/* list link in LOCK's list of proclocks */
+	// PGPROC 结构体中的 myProcLocks 记录了这个 PROCLOCK
 	SHM_QUEUE	procLink;		/* list link in PGPROC's list of proclocks */
 } PROCLOCK;
 
@@ -403,13 +456,19 @@ typedef struct LOCALLOCK
 	/* tag */
 	LOCALLOCKTAG tag;			/* unique identifier of locallock entry */
 
-	/* data */
+	/* data  */
+	// 锁对象
 	LOCK	   *lock;			/* associated LOCK object, if any */
+	// 锁对应的进程对象
 	PROCLOCK   *proclock;		/* associated PROCLOCK object, if any */
+	// 锁 tag 的 hash 值 
 	uint32		hashcode;		/* copy of LOCKTAG's hash value */
+	// 本地有多少次持有该锁，类似引用计数
 	int64		nLocks;			/* total number of times lock is held */
+	// 相关的 ResourceOwners 数量
 	int			numLockOwners;	/* # of relevant ResourceOwners */
 	int			maxLockOwners;	/* allocated size of array */
+	// 锁 Fast Path 需要的标记，是否持有了强锁
 	bool		holdsStrongLockCount;	/* bumped FastPathStrongRelationLocks */
 	LOCALLOCKOWNER *lockOwners; /* dynamically resizable array */
 } LOCALLOCK;

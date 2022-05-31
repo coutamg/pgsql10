@@ -103,11 +103,19 @@ typedef uint32 AclMode;			/* a bitmask of privilege bits */
  *	  Planning converts a Query tree into a Plan tree headed by a PlannedStmt
  *	  node --- the Query structure is not used by the executor.
  */
+/*
+	一个 SQL 语句在执行过程中，经过词法分析、语法分析和语义分析之后，会生成一棵查询树，
+	用 Query 来表示查询树。
+
+	查询优化模块在获取到查询树之后 ， 开始对查询树进行逻辑优化 ， 也就是对查询树进行等
+	价变换，将其重写成一棵新 的查询树 ， 这个新的查询树又作为物理优化的输入参数，进行物理
+	优化
+*/
 typedef struct Query
 {
-	// 节点的类型, 例如 T_Query
+	// Node 类型, 例如 T_Query
 	NodeTag		type; 
-	// 命令类型
+	// 语句类型
 	CmdType		commandType;	/* select|insert|update|delete|utility */
 	// 是原始查询还是来自规则的查询
 	QuerySource querySource;	/* where did I come from? */
@@ -116,12 +124,13 @@ typedef struct Query
 	// 查询重写时用到，如果该 Query 是由原始查询转换而来此字段为假，若右查询重写或者
 	// 查询规则时新增加的则为真
 	bool		canSetTag;		/* do I set the command result tag? */
-	// 定义游标或不可优化的查询语句
+	// 定义游标或不可优化的查询语句，通常为 DDL 语句
 	Node	   *utilityStmt;	/* non-null if commandType == CMD_UTILITY */
-	// 结果关系
+	// INSERT/UPDATE/DELETE 操作的目标表
 	int			resultRelation; /* rtable index of target relation for
 								 * INSERT/UPDATE/DELETE; 0 for SELECT */
 	// 目标属性或者 having 字句中是否有聚集函数
+	// 是否在 tlist 或 havingQual 上有聚集操作
 	bool		hasAggs;		/* has aggregates in tlist or havingQual */
 	// 目标属性是否有窗口函数
 	bool		hasWindowFuncs; /* has window functions in tlist */
@@ -138,10 +147,24 @@ typedef struct Query
 	// with 字节，用于公共表达式
 	List	   *cteList;		/* WITH list (of CommonTableExpr's) */
 	// 范围表, 在 select 语句中 from 子句中出现的表
+	// SQL 语句涉及的表清单
+	/*
+		在查询中 FROM 子句后面会指出需要进行查询的范围表，可能是对单个范围表进
+		行查询，也可能是对几个范围表做连接操作，rtable 中则记录了这些范围表。
+		rtable 是一个 List 指针， 所有要查询的范围表就记录在这个 List 中，
+		每个表以 RangeTblEntry 结构体来表示, 因此 rtable 是一个以 RangeTblEntry 
+		为节点的 List 链表
+	*/
 	List	   *rtable;			/* list of range table entries */
 	// 连接树，描述 from 和 where 子句出现的连接
 	// 例如 select ... from a, b, c 则连接树就是 from 中的简单的表，顺序无关
 	// 如果是 join 则与顺序有关
+	// SQL 语句中涉及表的连接关系及约束关系
+	/*
+		rtable 中列出了查询语句中的表，但没有明确指出各个表之间的连接关系，这个
+		连接的关系则通过 jointree 来标明， jointree 是一个 FromExpr 类型的
+		结构体， 它有 3 种类型的节点：FromExpr、 JoinExpr 和 RangeTblRef
+	*/
 	FromExpr   *jointree;		/* table join tree (FROM and WHERE clauses) */
 	// 目标属性，存放查询结果属性的表达式
 	/*
@@ -150,6 +173,7 @@ typedef struct Query
 		insert: 是插入到关系元组的属性
 		update: 要被更新的属性
 	*/
+	// targetlist 中包含了需要投影（ Project ）的列， 也就是 SFW 查询中的投影列
 	List	   *targetList;		/* target list (of TargetEntry) */
 
 	OverridingKind override;	/* OVERRIDING clause */
@@ -195,7 +219,42 @@ typedef struct Query
 	int			stmt_location;	/* start location, or -1 if unknown */
 	int			stmt_len;		/* length in bytes; 0 means "rest of string" */
 } Query;
+/*
+	例1. SELECT * FROM STUDENT WHERE SNO=1;
+	Qury结构体中变量对应的值：
+		rtable：rtable 链表中只有一个 RangeTblEntry 节点来表示 STUDENT 表
+		jointree: FromExpr::fromlist 有一个 RangeTblRef 节点来表示 STUDENT 表
+				  FromExpr::quals  有一个 OPExpr（操作符表达式）表示 SNO= 1 的操作
+		targetlist: 投影列＊号被展开， 里面是 TargetEntry 类型的3个节点， 分别代表
+					STUDENT 表的 3 个列(sno, sname, ssex)
+	
+	例2. SELECT st.sname, sc.degree FROM STUDENT st, SCORE sc WHERE st.sno = sc.sno;
+	Qury结构体中变量对应的值：
+		rtable：rtable 链表中有两个 RangeTblEntry 节点来表示 STUDENT 和 SCORE 两个表
+		jointree: FromExpr::fromlist 有两个 RangeTblRef 节点表示 STUDENT 和 SCORE 表
+				  FromExpr::quals 有一个 OPExpr（操作符表达式）表示 st.sno = sc.sno
+		targetlist: 语句指定了两个投影列，targetlist 链表中有两个 TargetEntry， 分别代
+					表 STUDENT 表中的 sno 和 SCORE 表中的 degree
+	
+	例3. SELECT st.sname, sc.degree FROM STUDENT st INNER JOIN SCORE sc ON 
+		 st.sno = sc.sno;
+	Qury结构体中变量对应的值：
+		rtable：rtable链表中有3个 RangeTblEntry 节点，前两个表示 STUDENT 和 SCORE 两个表，
+				第3个 表示 STUDENT 和 SCORE 的连接关系
+		jointree: 
+			FromExpr::fromlist 有一个 JoinExpr 类型的节点
+				JoinExpr::larg 一个 RangeTblRef 表示 STUDENT 表 左子树
+				JoinExpr::rarg 一个 RangeTblRef 表示 SCORE 表   右子树
+				JoinExpr::quals 一个 OPExpr（操作符表达式）表示 st.sno = sc.sno
+			FromExpr::quals NULL
+		targetlist: 语句指定了两个投影列， targetlist 链表中有两个 TargetEntry，
+					分别代表 STUDENT 表中的 sname 和 SCORE 表中的 degree
+	
+	例4. SELECT st.sname, c.cname, sc.degree FROM STUDENT st , COURSE c 
+		INNER JOIN SCORE sc ON c.cno = sc.cno WHERE st.sno = sc.sno；
+	见 Query1.png
 
+*/
 
 /****************************************************************************
  *	Supporting data structures for Parse Trees
@@ -1134,7 +1193,9 @@ RangeTblEntry 在 query->rtable 中链表内容：
 							RTE_RELATION(TEACHER)-- rtable --> 子Query
 
 RTE_JOIN 的 RangeTblEntry 保存的是 STUDENT 和 SCORE 表中的投影的 Var, vamo == 1 代
-表是 STUDENT 表中的列， vano == 2 代表是 SCORE 表中的列
+表是 STUDENT 表中的列， vano == 2 代表是 SCORE 表中的列.
+
+具体图见 Var1.png
 */
 
 /*

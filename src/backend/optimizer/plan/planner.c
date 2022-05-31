@@ -206,6 +206,7 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
 	PlannedStmt *result;
 
+	// 用户自定义的 planner
 	if (planner_hook)
 		result = (*planner_hook) (parse, cursorOptions, boundParams);
 	else // 标准的规划处理，可定制
@@ -230,6 +231,7 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	一般情况下 cursorOptions，boundParams 均为空值
 
 */
+// 见 standard_planner 流程图.png
 PlannedStmt *
 standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
@@ -354,7 +356,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 
 	/* primary planning entry point (may recurse for subqueries) */
 	// 创建计划，处理优化的主体函数，可递归处理子查询
-	// 1. 消除冗余条件，减少查询层次，假话路径生成
+	// 1. 消除冗余条件，减少查询层次，简化路径生成
 	// 2. 调用 inheritance_planner 或 grouping_planner 生成计划流程，该过程
 	//    不对查询树做出实质性改变
 	root = subquery_planner(glob, parse, NULL,
@@ -575,6 +577,8 @@ subquery_planner(PlannerGlobal *glob, // 记录做计划期间的全局信息，
 	 * processed just before pulling them up.
 	 */
 	// 提升子连接
+	// 出现在 WHERE/ION 等约束条件中或投影中的子句是子连接语句
+	// 调用关系参考 pull_up_sublinks.png
 	if (parse->hasSubLinks)
 		pull_up_sublinks(root);
 
@@ -590,6 +594,7 @@ subquery_planner(PlannerGlobal *glob, // 记录做计划期间的全局信息，
 	 * query.
 	 */
 	// 提升子查询
+	// 出现在 FROM 关键字后的 子句是子查询语句
 	pull_up_subqueries(root);
 
 	/*

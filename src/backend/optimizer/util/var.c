@@ -97,7 +97,7 @@ pull_varnos(Node *node)
 	pull_varnos_context context;
 
 	context.varnos = NULL;
-	context.sublevels_up = 0;
+	context.sublevels_up = 0; // 本层的 Var
 
 	/*
 	 * Must be prepared to start with a Query or a bare expression tree; if

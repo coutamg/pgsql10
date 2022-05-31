@@ -83,4 +83,8 @@
 
     在 psql 命令行中可以用 \set ECHO_HIDDEN on|off 来控制显示一个命令的实际 SQL
 
+# expanded display
+    \x 竖式显示 
 
+# 修改pg 编译 copy_file_range 错误
+sed -i "s/copy_file_range/copy_file_chunk/g" src/bin/pg_rewind/copy_fetch.c

@@ -951,6 +951,9 @@ DropErrorMsgWrongType(const char *relname, char wrongkind, char rightkind)
  *		Implements DROP TABLE, DROP INDEX, DROP SEQUENCE, DROP VIEW,
  *		DROP MATERIALIZED VIEW, DROP FOREIGN TABLE
  */
+/* drop 表
+exec_simple_query -> PortalRun -> FillPortalStore -> PortalRunMulti -> PortalRunUtility -> ProcessUtility -> standard_ProcessUtility -> ExecDropStmt -> RemoveRelations
+*/
 void
 RemoveRelations(DropStmt *drop)
 {

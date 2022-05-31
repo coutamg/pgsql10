@@ -1350,6 +1350,7 @@ addRangeTableEntryForSubquery(ParseState *pstate,
 
 	/* fill in any unspecified alias columns */
 	varattno = 0;
+	// targetList project 的列名，例如 select: 则是 select 和 from 之间的列
 	foreach(tlistitem, subquery->targetList)
 	{
 		TargetEntry *te = (TargetEntry *) lfirst(tlistitem);

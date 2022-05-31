@@ -28,14 +28,28 @@ struct PGPROC;
  * Code outside of lwlock.c should not manipulate the contents of this
  * structure directly, but we have to declare it here to allow LWLocks to be
  * incorporated into other data structures.
+ * lwlock.c外的代码不应直接操作这个结构的内容,
+ * 但我们必须声明该结构体以便将LWLocks合并到其他数据结构中。
+ * 自旋锁和轻量锁属于系统锁，它们主要用来保护数据库系统的一些变量。
+ * 常规锁参考 lockdefs.h 常规锁则属于事务锁，主要用来封锁各种数据库对象，
+ * 如表、页面、元组等
  */
 typedef struct LWLock
 {
 	uint16		tranche;		/* tranche ID */
+	//独占/非独占locker的状态，保存轻量锁的状态
+	/* 低24位用来作为共享锁的计数区，因为共享锁之间是相容的，因此可以有多个申请者同时持
+	 * 有共享锁，也就是说一个轻量锁最多可以有2^24个持锁者（共享锁）。另外保留了1位用来
+	 * 做排他锁的标记，因为排他锁模式和其他模式不相容，同一时间只能有一个持锁者，所以只需
+	 * 要1位就够了. 参考 lwlock-state.png
+	 */
 	pg_atomic_uint32 state;		/* state of exclusive/nonexclusive lockers */
+	//正在等待的PGPROCs链表，轻量锁的等待着链表
 	proclist_head waiters;		/* list of waiting PGPROCs */
 #ifdef LOCK_DEBUG
+    //waiters的数量
 	pg_atomic_uint32 nwaiters;	/* number of waiters */
+	//锁的最后独占者
 	struct PGPROC *owner;		/* last exclusive owner of the lock */
 #endif
 } LWLock;
@@ -192,6 +206,8 @@ extern void LWLockInitialize(LWLock *lock, int tranche_id);
  * we reserve additional tranche IDs for builtin tranches not included in
  * the set of individual LWLocks.  A call to LWLockNewTrancheId will never
  * return a value less than LWTRANCHE_FIRST_USER_DEFINED.
+ * 每个Builtin Tranche可能对应多个LWLock，它代表的是一组LWLocks，这组LWLocks虽然
+ * 各自封锁各自的内容，但是它们的功能相同
  */
 typedef enum BuiltinTrancheIds
 {

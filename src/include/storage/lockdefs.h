@@ -30,6 +30,7 @@ typedef int LOCKMODE;
  * methods (both DEFAULT and USER).
  */
 
+// 常规锁模式参考 lockdefs-1.png, 相容矩阵参考 lockdefs-2.png
 /* NoLock is not a lock mode, but a flag value meaning "don't get a lock" */
 #define NoLock					0
 

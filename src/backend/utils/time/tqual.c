@@ -959,6 +959,8 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
  * inserting/deleting transaction was still running --- which was more cycles
  * and more contention on the PGXACT array.
  */
+// 流程图参考 mvcc.png
+// http://blog.itpub.net/31493717/viewspace-2679933/
 bool
 HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot,
 					   Buffer buffer)

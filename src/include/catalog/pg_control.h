@@ -35,12 +35,15 @@ typedef struct CheckPoint
 {
 	XLogRecPtr	redo;			/* next RecPtr available when we began to
 								 * create CheckPoint (i.e. REDO start point) */
+	// 目前的时间序号
 	TimeLineID	ThisTimeLineID; /* current TLI */
 	TimeLineID	PrevTimeLineID; /* previous TLI, if this record begins a new
 								 * timeline (equals ThisTimeLineID otherwise) */
 	bool		fullPageWrites; /* current full_page_writes */
 	uint32		nextXidEpoch;	/* higher-order bits of nextXid */
+	// 下一个可用的事务 ID
 	TransactionId nextXid;		/* next free XID */
+	// 下一个可用的 OID
 	Oid			nextOid;		/* next free OID */
 	MultiXactId nextMulti;		/* next free MultiXactId */
 	MultiXactOffset nextMultiOffset;	/* next free MultiXact offset */
@@ -48,6 +51,7 @@ typedef struct CheckPoint
 	Oid			oldestXidDB;	/* database with minimum datfrozenxid */
 	MultiXactId oldestMulti;	/* cluster-wide minimum datminmxid */
 	Oid			oldestMultiDB;	/* database with minimum datminmxid */
+	// checkpoint 的时间
 	pg_time_t	time;			/* time stamp of checkpoint */
 	TransactionId oldestCommitTsXid;	/* oldest Xid with valid commit
 										 * timestamp */

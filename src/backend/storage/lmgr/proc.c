@@ -166,6 +166,7 @@ InitProcGlobal(void)
 	int			i,
 				j;
 	bool		found;
+	// MaxBackends 参考 InitializeMaxBackends
 	uint32		TotalProcs = MaxBackends + NUM_AUXILIARY_PROCS + max_prepared_xacts;
 
 	/* Create the ProcGlobal shared structure */
@@ -228,6 +229,7 @@ InitProcGlobal(void)
 			InitSharedLatch(&(procs[i].procLatch));
 			LWLockInitialize(&(procs[i].backendLock), LWTRANCHE_PROC);
 		}
+		// 标记 当前 procs 的位置
 		procs[i].pgprocno = i;
 
 		/*
@@ -304,7 +306,7 @@ InitProcess(void)
 	else if (IsBackgroundWorker)
 		procgloballist = &ProcGlobal->bgworkerFreeProcs;
 	else
-		procgloballist = &ProcGlobal->freeProcs;
+		procgloballist = &ProcGlobal->freeProcs; // 从空闲的 procs 中获取
 
 	/*
 	 * Try to get a proc struct from the appropriate free list.  If this
@@ -321,6 +323,7 @@ InitProcess(void)
 
 	if (MyProc != NULL)
 	{
+		// 指向下一个 空闲的 PGPROC
 		*procgloballist = (PGPROC *) MyProc->links.next;
 		SpinLockRelease(ProcStructLock);
 	}
@@ -337,12 +340,14 @@ InitProcess(void)
 				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
 				 errmsg("sorry, too many clients already")));
 	}
+
 	MyPgXact = &ProcGlobal->allPgXact[MyProc->pgprocno];
 
 	/*
 	 * Cross-check that the PGPROC is of the type we expect; if this were not
 	 * the case, it would get returned to the wrong list.
 	 */
+	// 没理解？？？
 	Assert(MyProc->procgloballist == procgloballist);
 
 	/*
@@ -412,6 +417,9 @@ InitProcess(void)
 	 * Acquire ownership of the PGPROC's latch, so that we can use WaitLatch
 	 * on it.  That allows us to repoint the process latch, which so far
 	 * points to process local one, to the shared one.
+	 * 
+	 * 获得PGPROC的 latch 的所有权，这样我们就可以在上面使用 WaitLatch。这允许我们将进程锁
+	 * 存器(到目前为止指向本地进程的锁存器)重新指向共享进程。
 	 */
 	OwnLatch(&MyProc->procLatch);
 	SwitchToSharedLatch();
@@ -1024,6 +1032,13 @@ ProcQueueInit(PROC_QUEUE *queue)
  *
  * NOTES: The process queue is now a priority queue for locking.
  */
+/*
+  将当前事务（或进程）加入等待队列也是有技巧的。通常而言，等待队列应该按照锁的申请顺序排列，
+  因此当前事务应该加入等待队列的队尾。但是如果本事务A除了当前申请的锁模式，已经持有了这个
+  对象的其他锁模式，而且等待队列中某个事务B所等待的锁模式和当前事务A持有的锁模式冲突，这时ßßßß
+  候如果把事务A插入这个等待者B的后面，就隐含着死锁的可能，所以可以考虑把事务A插入这个等待
+  者的前面
+*/
 int
 ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 {
@@ -1045,6 +1060,9 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	 * If group locking is in use, locks held by members of my locking group
 	 * need to be included in myHeldLocks.
 	 */
+	// 收集当前事务在 locallock 这个锁对象上持有的其他锁模式
+	// 如果不是单进程事务，则需要将相同group中持有该锁对象的锁
+	// 模式一并收集
 	if (leader != NULL)
 	{
 		SHM_QUEUE  *procLocks = &(lock->procLocks);
@@ -1082,7 +1100,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	if (myHeldLocks != 0)
 	{
 		LOCKMASK	aheadRequests = 0;
-
+		// 从等待队列获得一个事务（进程），它是一个等待者
 		proc = (PGPROC *) waitQueue->links.next;
 		for (i = 0; i < waitQueue->size; i++)
 		{
@@ -1097,9 +1115,12 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 				continue;
 			}
 			/* Must he wait for me? */
+			// 等待队列中的等待者想要的锁模式和当前事务持有的锁模式有冲突
 			if (lockMethodTable->conflictTab[proc->waitLockMode] & myHeldLocks)
 			{
 				/* Must I wait for him ? */
+				// 情况一：如果当前事务要等待的锁模式和等待者持有的锁模式冲突，这时候冲突
+				//		  不可避免，需要记录死锁标记
 				if (lockMethodTable->conflictTab[lockmode] & proc->heldLocks)
 				{
 					/*
@@ -1114,6 +1135,10 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 					break;
 				}
 				/* I must go before this waiter.  Check special case. */
+				// aheadRequests 记录的是在等待队列中，处于 proc 这个等待者前面的所有
+				// 等待者锁等待的锁模式的并集
+				// 情况二：如果当前锁模式和前面的 proc 前面的锁模式都不冲突，
+				//		  且在主锁表中也没有检查到冲突，则直接取锁成功
 				if ((lockMethodTable->conflictTab[lockmode] & aheadRequests) == 0 &&
 					LockCheckConflicts(lockMethodTable,
 									   lockmode,
@@ -1126,9 +1151,12 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 					return STATUS_OK;
 				}
 				/* Break out of loop to put myself before him */
+				// 情况三：这时候我们找到等待队列中第一个和当前事务持有的锁模式冲突的事务，
+				//		 记住这个 proc，跳出循环，我们要把当前事务插到它的前面
 				break;
 			}
 			/* Nope, so advance to next waiter */
+			// 收集等待队列中的等待的锁模式的并集
 			aheadRequests |= LOCKBIT_ON(proc->waitLockMode);
 			proc = (PGPROC *) proc->links.next;
 		}
@@ -1141,12 +1169,20 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	else
 	{
 		/* I hold no locks, so I can't push in front of anyone. */
+		// 当前事务没有持有过这个锁对象，获取等待队列的队首元素，也就是说，
+		// 要把当前事务插到等待队列的头部
 		proc = (PGPROC *) &(waitQueue->links);
 	}
 
 	/*
 	 * Insert self into queue, ahead of the given proc (or at tail of queue).
 	 */
+	/*
+		插入等待队列后，锁就开始进入等待状态，它会在以下两种情况下被唤醒。
+		 • 死锁检测触发超时机制，要进行新一轮的死锁检测。
+		 • PGPROC->waitStatus不再是STATUS_WAITING状态，已经有其他
+		   事务释放了锁，当前事务被唤醒
+	*/
 	SHMQueueInsertBefore(&(proc->links), &(MyProc->links));
 	waitQueue->size++;
 
@@ -1258,6 +1294,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 			/* check for deadlocks first, as that's probably log-worthy */
 			if (got_deadlock_timeout)
 			{
+				// 做死锁检测
 				CheckDeadLock();
 				got_deadlock_timeout = false;
 			}

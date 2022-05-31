@@ -130,9 +130,14 @@ perform_spin_delay(SpinDelayStatus *status)
 	/* Block the process every spins_per_delay tries */
 	if (++(status->spins) >= spins_per_delay)
 	{
+		// 如果旋转了很长时间，仍然没有办法获得锁资源，就进入自杀模式
 		if (++(status->delays) > NUM_DELAYS)
 			s_lock_stuck(status->file, status->line, status->func);
-
+		
+		/*
+		  如果尝试了很多次TAS之后仍然无法获得锁资源，那么就进入sleep，也就是交出
+		  CPU资源，sleep的时间是随机的，但不能超出上下界
+		*/
 		if (status->cur_delay == 0) /* first time to delay? */
 			status->cur_delay = MIN_DELAY_USEC;
 

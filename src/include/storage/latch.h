@@ -137,6 +137,7 @@ typedef struct Latch
 							 WL_SOCKET_WRITEABLE | \
 							 WL_SOCKET_CONNECTED)
 
+// 每个epoll事件对应一个，也对应一个latch
 typedef struct WaitEvent
 {
 	int			pos;			/* position in the event data structure */

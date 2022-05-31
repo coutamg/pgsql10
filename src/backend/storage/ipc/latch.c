@@ -89,6 +89,7 @@ struct WaitEventSet
 	 * useful because we check the state of the latch before performing doing
 	 * syscalls related to waiting.
 	 */
+	// 数组记录该set下所有的latch = event
 	Latch	   *latch;
 	int			latch_pos;
 
@@ -360,20 +361,70 @@ WaitLatchOrSocket(volatile Latch *latch, int wakeEvents, pgsocket sock,
 	int			rc;
 	WaitEvent	event;
 	WaitEventSet *set = CreateWaitEventSet(CurrentMemoryContext, 3);
+	/******************************************************************
+CreateWaitEventSet展开：构造WaitEventSet
+
+WaitEventSet *set
+// 内存结构：
+set->sz += MAXALIGN(sizeof(WaitEventSet))    // 整体分配一个WaitEventSet
+// 每个事件有一个WaitEvent, 要监听的3个事件
+set->events->sz += MAXALIGN(sizeof(WaitEvent) * nevents) 
+set->epoll_ret_events->sz += MAXALIGN(sizeof(struct epoll_event) * nevents) 
+set->latch = NULL
+set->nevents_space = nevents
+set->epoll_fd = epoll_create1(EPOLL_CLOEXEC)     // 200w个
+******************************************************************/  
 
 	if (wakeEvents & WL_TIMEOUT)
 		Assert(timeout >= 0);
 	else
 		timeout = -1;
 
+	/*
+		WL_LATCH_SET 时在 AddWaitEventToSet 中要监听的 fd 是 selfpipe_readfd，也就是上
+		面创建的管道读端，应用 self-pipe trick
+
+		WaitLatchOrSocket 中增加对 latch 的等待，记录为一个wakeEvents
+	*/
 	if (wakeEvents & WL_LATCH_SET)
 		AddWaitEventToSet(set, WL_LATCH_SET, PGINVALID_SOCKET,
 						  (Latch *) latch, NULL);
+/******************************************************************
+WL_LATCH_SET会进入这个分支：
+AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch, void *user_data)
 
+1、现在的latch={is_set = 0, is_shared = 1 '\001', owner_pid = 30877}， 30877 是 startup 的 pid
+2、开始拼 WaitEvent  *event;
+  event = &set->events[set->nevents]
+  ...
+  event->fd = selfpipe_readfd ***********注意这里监控的是管道的读端
+  ...
+  //set: {nevents = 1, nevents_space = 3, events = 0xf81dd8, latch = 0x2aaaaac0d254,
+          latch_pos = 0, epoll_fd = 7, epoll_ret_events = 0xf81e20}
+  //event: {pos = 0, events = 1, fd = 13, user_data = 0x0}
+      WaitEventAdjustEpoll(set, event, EPOLL_CTL_ADD)
+          epoll_event epoll_ev：
+              EPOLLERR：表示对应的文件描述符发生错误；
+              EPOLLHUP：表示对应的文件描述符被挂断；
+              EPOLLIN：表示对应的文件描述符可以读（包括对端SOCKET正常关闭）；
+              
+              epoll_ctl(set->epoll_fd, action, event->fd, &epoll_ev)
+
+******************************************************************/
+
+	/*
+		WaitLatchOrSocket 中增加对 postmaster_alive_fds[POSTMASTER_FD_WATCH] 的等待，
+		记录为一个 wakeEvents
+	*/
 	if (wakeEvents & WL_POSTMASTER_DEATH && IsUnderPostmaster)
 		AddWaitEventToSet(set, WL_POSTMASTER_DEATH, PGINVALID_SOCKET,
 						  NULL, NULL);
 
+ /******************************************************************
+ WL_POSTMASTER_DEATH进入这个分支
+ 
+ 和上流程相同，不同的是event->fd = postmaster_alive_fds[POSTMASTER_FD_WATCH]
+ ******************************************************************/
 	if (wakeEvents & WL_SOCKET_MASK)
 	{
 		int			ev;
@@ -381,6 +432,18 @@ WaitLatchOrSocket(volatile Latch *latch, int wakeEvents, pgsocket sock,
 		ev = wakeEvents & WL_SOCKET_MASK;
 		AddWaitEventToSet(set, ev, sock, NULL, NULL);
 	}
+
+/******************************************************************
+开始等待：
+类似epoll的函数构造，传入上面构造好的set，可能记录多个event。 传出event唤醒的事件。
+
+进入
+rc = WaitEventSetWaitBlock(set, cur_timeout,occurred_events, nevents);
+  epoll_wait(set->epoll_fd, set->epoll_ret_events, nevents, cur_timeout)
+    等5秒唤醒 rc == 0 return -1;
+    
+
+******************************************************************/
 
 	rc = WaitEventSetWait(set, timeout, &event, 1, wait_event_info);
 
@@ -392,8 +455,17 @@ WaitLatchOrSocket(volatile Latch *latch, int wakeEvents, pgsocket sock,
 							   WL_POSTMASTER_DEATH |
 							   WL_SOCKET_MASK);
 	}
-
+	// 清理 WaitEventSet
 	FreeWaitEventSet(set);
+/******************************************************************
+释放刚刚epoll_create1创建的epoll_fd
+
+close(set->epoll_fd)
+
+释放整体
+
+pfree(set)
+******************************************************************/
 
 	return ret;
 }
@@ -704,7 +776,7 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 		set->latch = latch;
 		set->latch_pos = event->pos;
 #ifndef WIN32
-		event->fd = selfpipe_readfd;
+		event->fd = selfpipe_readfd; // 匿名管道的读端
 #endif
 	}
 	else if (events == WL_POSTMASTER_DEATH)

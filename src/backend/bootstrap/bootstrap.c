@@ -190,6 +190,7 @@ static IndexList *ILHead = NULL;
  *
  *	 This code is here just because of historical reasons.
  */
+// pg boost 启动
 void
 AuxiliaryProcessMain(int argc, char *argv[])
 {
@@ -423,6 +424,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 
 		case StartupProcess:
 			/* don't set signals, startup process has its own agenda */
+			// 这里进行 recovery
 			StartupProcessMain();
 			proc_exit(1);		/* should never return */
 
@@ -433,6 +435,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 
 		case CheckpointerProcess:
 			/* don't set signals, checkpointer has its own agenda */
+			// checkpoint 后台进程
 			CheckpointerMain();
 			proc_exit(1);		/* should never return */
 

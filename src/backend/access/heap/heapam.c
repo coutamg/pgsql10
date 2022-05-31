@@ -1110,6 +1110,8 @@ fastgetattr(HeapTuple tup, int attnum, TupleDesc tupleDesc,
  *		expected to check whether the relkind is something it can handle.
  * ----------------
  */
+// 用 OID 打开一个表
+// 通过表名操作其实也是用 表名找到 表的 OID 然后在调用下面函数
 Relation
 relation_open(Oid relationId, LOCKMODE lockmode)
 {
@@ -1118,6 +1120,7 @@ relation_open(Oid relationId, LOCKMODE lockmode)
 	Assert(lockmode >= NoLock && lockmode < MAX_LOCKMODES);
 
 	/* Get the lock before trying to open the relcache entry */
+	// 将表的 Oid 和 lockmode 联系在一起
 	if (lockmode != NoLock)
 		LockRelationOid(relationId, lockmode);
 
@@ -1280,6 +1283,11 @@ relation_close(Relation relation, LOCKMODE lockmode)
  *		storage.)
  * ----------------
  */
+/* 常规锁是何时被加上：
+	要对一个表进行操作，通常会通过 heap_open 来“打开”这个表。在打开表的时候，需要指定打开
+	这个表所需要的锁的模式。在 heap_open 之后，会有一系列函数将锁模式传递下去，最终会通过
+	LockRelationOid 函数将表的 Oid 和 lockmode 联系在一起
+*/
 Relation
 heap_open(Oid relationId, LOCKMODE lockmode)
 {
@@ -1308,6 +1316,7 @@ heap_open(Oid relationId, LOCKMODE lockmode)
  *		As above, but relation is specified by a RangeVar.
  * ----------------
  */
+// 根据表名打开文件
 Relation
 heap_openrv(const RangeVar *relation, LOCKMODE lockmode)
 {
@@ -2421,6 +2430,7 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
 	+----------+-------+-------+-----+   <-------+
 	| header   | value | value | ... |
 	+----------+-------+-------+-----+
+	这里 header 就是 HeapTupleHeaderData
 		\|/
 	t_cmin : 插入的 CID (command Id, 命令 ID)
 	t_cmax : 删除的 CID
@@ -2433,7 +2443,8 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
 	t_hoff: 表示该元组头的大小
 	_bits[]: 用于标识元组哪些字段为空
 
-
+具体一个 page 见 page.png
+tuple 见 tuple.png
 */
 Oid
 heap_insert(Relation relation, HeapTuple tup, CommandId cid,

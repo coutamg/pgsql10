@@ -176,6 +176,12 @@ int			max_safe_fds = 32;	/* default if not changed */
 /* these are the assigned bits in fdstate below: */
 #define FD_TEMPORARY		(1 << 0)	/* T = delete when closed */
 #define FD_XACT_TEMPORARY	(1 << 1)	/* T = delete at eoXact */
+// Transient 的文件：缓冲区替换发生时，如果待替换缓冲区块为“脏”，当前进程在缓冲区块被替换
+// 前需要将缓冲区块中“脏”的内容写回对应文件。为此，当前进程需要临时打开该缓冲区块对应的数
+// 据文件，并且在事务结束时关闭 Linux 内核中该文件的句柄。
+
+// FD_XACT_TEMPORARY 与 Transient 的 区别在于，事务结束后，
+// 标记为 FD_XACT_TEMPORARY 的文件需要删除而不仅仅是关闭
 
 typedef struct vfd
 {
@@ -806,6 +812,7 @@ InitFileAccess(void)
 				 errmsg("out of memory")));
 
 	MemSet((char *) &(VfdCache[0]), 0, sizeof(Vfd));
+	// 设置文件描述符为 VFD_CLOSED 即-1，表示为“挂”起状态
 	VfdCache->fd = VFD_CLOSED;
 
 	SizeVfdCache = 1;
@@ -1066,6 +1073,7 @@ LruDelete(File file)
 	 */
 	if (close(vfdP->fd))
 		elog(LOG, "could not close file \"%s\": %m", vfdP->fileName);
+	// 设置文件描述符为 VFD_CLOSED 即-1，表示为“挂”起状态
 	vfdP->fd = VFD_CLOSED;
 	--nfile;
 
@@ -1565,6 +1573,7 @@ FileClose(File file)
 		vfdP->fdstate &= ~FD_TEMPORARY;
 
 		/* Subtract its size from current usage (do first in case of error) */
+		// 更新临时文件大小
 		temporary_files_size -= vfdP->fileSize;
 		vfdP->fileSize = 0;
 

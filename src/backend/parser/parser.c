@@ -51,7 +51,14 @@ raw_parser(const char *str)
 	parser_init(&yyextra);
 
 	/* Parse! */
-	// 调用 lex 和 yacc 来实现词法与语法分析
+	/* 调用 lex 和 yacc 来实现词法与语法分析
+	* 调用 yyparse 来解析
+	* 例如这里是一个 select * from xxx;
+	* 具体解析 selec 规则参考 gram.y:10913 的 simple_select 定义
+	* 一条 sql 语句 用 一个 ListCell 来表示
+	* 例如上面的 select * from xxx; 解析后 yyextra.parsetree 就是 
+	* List->head = ListCell{ListCell::data = SelectStmt}
+	*/ 
 	yyresult = base_yyparse(yyscanner);
 
 	/* Clean up (release memory) */

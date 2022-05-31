@@ -18,6 +18,7 @@
  * The ordering here is important, because the highest numerical value takes
  * precedence when a RTE is specified multiple ways.  See applyLockingClause.
  */
+// pg 的行锁模式，参考 https://blog.csdn.net/liuhhaiffeng/article/details/106492740
 typedef enum LockClauseStrength
 {
 	LCS_NONE,					/* no such clause - only used in PlanRowMark */

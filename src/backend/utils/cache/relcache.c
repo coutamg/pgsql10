@@ -2078,10 +2078,12 @@ RelationIdGetRelation(Oid relationId)
 	/*
 	 * first try to find reldesc in the cache
 	 */
+	// 先在 relcache 中查找
 	RelationIdCacheLookup(relationId, rd);
 
 	if (RelationIsValid(rd))
 	{
+		// relcache 中找到了，则将引用计数 +1
 		RelationIncrementReferenceCount(rd);
 		/* revalidate cache entry if necessary */
 		if (!rd->rd_isvalid)
@@ -2104,6 +2106,7 @@ RelationIdGetRelation(Oid relationId)
 	 * no reldesc in the cache, so have RelationBuildDesc() build one and add
 	 * it.
 	 */
+	// 第一次打开该表，则构建新的 RelationData，并插入到 relcace 中
 	rd = RelationBuildDesc(relationId, true);
 	if (RelationIsValid(rd))
 		RelationIncrementReferenceCount(rd);

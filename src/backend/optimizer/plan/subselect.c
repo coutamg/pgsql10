@@ -992,6 +992,7 @@ convert_testexpr_mutator(Node *node,
 			 * substructure in the modified parse tree.  This is probably
 			 * unnecessary when it's a Param, but be safe.
 			 */
+			// Param 的编号和 Var 链表中的位置是一一对应的
 			return (Node *) copyObject(list_nth(context->subst_nodes,
 												param->paramid - 1));
 		}
@@ -1296,9 +1297,17 @@ SS_process_ctes(PlannerInfo *root)
  * subselect to the query's rangetable, so that it can be referenced in
  * the JoinExpr's rarg.
  */
-JoinExpr *
-convert_ANY_sublink_to_join(PlannerInfo *root, SubLink *sublink,
-							Relids available_rels)
+/*
+ ANY 子连接提升的一个感性原则：
+	ANY 类型 的非相关子连接可以提升 （ 仍然需要是 “ 简单” 的子连接〉
+	并且可以通过物化的方式进行优化。
+
+	ANY 类 型的相关子连接 目前还不能提升
+*/
+JoinExpr * // 返回 Semi Join类型 的JoinExpr
+convert_ANY_sublink_to_join(PlannerInfo *root, // 查询优化模块的上下文信息结构体
+							SubLink *sublink,// 要处理的子连接信息
+							Relids available_rels)// 输出参数，适用于子连接提升的表的集合
 {
 	JoinExpr   *result;
 	Query	   *parse = root->parse;
@@ -1317,6 +1326,11 @@ convert_ANY_sublink_to_join(PlannerInfo *root, SubLink *sublink,
 	 * The sub-select must not refer to any Vars of the parent query. (Vars of
 	 * higher levels should be okay, though.)
 	 */
+	/*
+		ANY 类型 的子连接如果是 “ 相关子连接”，即子连接中引用了父查询的列属性，
+		子连接不能提升。通过 Var::varlevelsup 来判断，如果该Var(属性) 的
+		varlevelsup == 1， 说明引用了父查询的列属性
+	*/
 	if (contain_vars_of_level((Node *) subselect, 1))
 		return NULL;
 
@@ -1325,6 +1339,10 @@ convert_ANY_sublink_to_join(PlannerInfo *root, SubLink *sublink,
 	 * it's not gonna be a join.  (Note that it won't have Vars referring to
 	 * the subquery, rather Params.)
 	 */
+	/*
+	 ANY 类型 的子连接 SubLink->testexpr 中 没有 引用 上一层 的列，
+	 不能提升，因为这种情况下上层 的表和子连接中的表不能构成连接关系
+	*/
 	upper_varnos = pull_varnos(sublink->testexpr);
 	if (bms_is_empty(upper_varnos))
 		return NULL;
@@ -1332,12 +1350,21 @@ convert_ANY_sublink_to_join(PlannerInfo *root, SubLink *sublink,
 	/*
 	 * However, it can't refer to anything outside available_rels.
 	 */
+	/*
+	 ANY 类型的子连接 的左操作数如果不在 available_rels 中，子连接不能提升
+	*/
 	if (!bms_is_subset(upper_varnos, available_rels))
 		return NULL;
 
 	/*
 	 * The combining operators and left-hand expressions mustn't be volatile.
 	 */
+	/*
+	 ANY 类型 的子连接中 SubLink->testexpr 中如果含有易失性函数(PostgresQL 数据库中
+	 的函 数有三种稳定性级别： VOLATILE、 STABLE 和 IMMUTABLE，其中 VOLATILE 函数输
+	 入同样的参数会返回不同的结果，查询优化模块通常不对含有 VOLATILE 函数 的表达式进行优化)
+	 子连接不能提升。
+	*/
 	if (contain_volatile_functions(sublink->testexpr))
 		return NULL;
 
@@ -1352,23 +1379,41 @@ convert_ANY_sublink_to_join(PlannerInfo *root, SubLink *sublink,
 	 * below). Therefore this is a lot easier than what pull_up_subqueries has
 	 * to go through.
 	 */
+	/*
+	 SELECT sname FROM STUDENT WHERE sno > ANY (SELECT sno FROM SCORE）
+	 提升前的查询树内存结构图见 select_with_any.png
+	 SubLink结构中变量情况
+	   subLinkType: ANY谓词产生的 ANY SUBLINK
+       subLinkld: 语句中只有－个子连接，编号为 1
+	   testexpr: 操作符表达式，左操作数是Var，代表 STUDENT.sno 操作符是“>”， 右操
+				 作数类型是Param，代表 SCORE.sno，也就是子连接中的投影列(targetlist)
+	   operName: 操作符是“>”
+	   subselect: 子连接中的子句生成的查询树(Query), 这里是SQL语句中的
+	   			  “SELECT sno FROM SCORE ”生成的查询树
+	*/
+	// 生成新的 RangeTblEntry 节点, rtekind 为 RTE_SUBQUERY
 	rte = addRangeTableEntryForSubquery(pstate,
 										subselect,
 										makeAlias("ANY_subquery", NIL),
 										false,
 										false);
+	// 加入到上层的 rtable 中，以获得下标值
 	parse->rtable = lappend(parse->rtable, rte);
+	// 获得 rtindex
 	rtindex = list_length(parse->rtable);
 
 	/*
 	 * Form a RangeTblRef for the pulled-up sub-select.
 	 */
+	// 生成新的 RangeTableRef 节点
 	rtr = makeNode(RangeTblRef);
 	rtr->rtindex = rtindex;
 
 	/*
 	 * Build a list of Vars representing the subselect outputs.
 	 */
+	// 提取 SubLink->subselect 查询树中的投影列，参照上面给出 的例句
+	// 子查询 中 的投影列就是 SCORE.sno 列属性，给这个列属性生成新的 Var 变量
 	subquery_vars = generate_subquery_vars(root,
 										   subselect->targetList,
 										   rtindex);
@@ -1376,21 +1421,38 @@ convert_ANY_sublink_to_join(PlannerInfo *root, SubLink *sublink,
 	/*
 	 * Build the new join's qual expression, replacing Params with these Vars.
 	 */
+	// 用 subquery_vars 替换 SubLink->testexpr 中 Param 类型的变量
+	// convert_testexpr 函数会递归查找 SubLink->testexpr 中 Param 变量
+	// 然后用对应的 Var 变量将其替换
 	quals = convert_testexpr(root, sublink->testexpr, subquery_vars);
 
 	/*
 	 * And finally, build the JoinExpr node.
 	 */
+	/*
+	 这时即有了新的 RangeTblRef(addRangeTableEntryForSubquery 生成)，有了新的
+	 quals(convert_testexpr 生成)，就可以生成新的 JoinExpr ，新的 RangeTblRef 
+	 作为连接的 RHS 端，约束条件就是 SubLink->testexpr 转换后的表达式，这时候生成
+	 的 JoinExpr 是不完整的，它的 LHS 端目前是 NULL, LHS 的值由 
+	 pull_up_sublinks_qual_recurse 函数去填充。
+	*/
 	result = makeNode(JoinExpr);
-	result->jointype = JOIN_SEMI;
+	result->jointype = JOIN_SEMI; // 连接类型是 Semi Join
 	result->isNatural = false;
-	result->larg = NULL;		/* caller must fill this in */
-	result->rarg = (Node *) rtr;
+	result->larg = NULL; // pull_up_sublinks_qual_recurse 函数去填充
+	result->rarg = (Node *) rtr; // SubLink.subselect 转换出来的子查询
 	result->usingClause = NIL;
-	result->quals = quals;
+	result->quals = quals; // SubLink.testexpr 转换出来的表达式
 	result->alias = NULL;
 	result->rtindex = 0;		/* we don't need an RTE for it */
 
+	/*
+	 经过变换后的 SQL 语句我们可以写成（不能执行）：
+	 SELECT sname FROM STUDENT SEMI JOIN (SELECT sno FROM SCORE) ANY_subquery 
+	 WHERE STUDENT.sno > ANY_subquery.sno;
+
+	 ANY 类型的子连接在提升后出现在了 FROM 关键字之后，变成了一个范围表，也就是说变成了子查询
+	*/
 	return result;
 }
 
@@ -1401,9 +1463,15 @@ convert_ANY_sublink_to_join(PlannerInfo *root, SubLink *sublink,
  * except that we also support the case where the caller has found NOT EXISTS,
  * so we need an additional input parameter "under_not".
  */
-JoinExpr *
-convert_EXISTS_sublink_to_join(PlannerInfo *root, SubLink *sublink,
-							   bool under_not, Relids available_rels)
+/*
+ EXISTS 类型的子连接和 ANY 类型的子连接不同，它没有左操作数，因此 EXISTS 类型的 子连接能
+ 够提升的条件与 ANY 类型的子连接也不同。
+*/
+JoinExpr * // 返回 Semi Join或Anti Join类型的JoinExpr
+convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上下文信息结构体 
+					SubLink *sublink, // 要处理的子连接信息
+					bool under_not, // 用于区分EXIST和NOT EXISTS
+					Relids available_rels) // 输出参数， jtnode 参数中涉及的表 的集合
 {
 	JoinExpr   *result;
 	Query	   *parse = root->parse;

@@ -71,6 +71,13 @@ extern void ShmemBackendArrayAllocation(void);
  * the backend ID as a 3-byte signed integer, b) INT_MAX/4 because some places
  * compute 4*MaxBackends without any overflow check.  This is rechecked in the
  * relevant GUC check hooks and in RegisterBackgroundWorker().
+ * 注意:MAX_BACKENDS限制为2^18-1,
+ *   这是因为该值为buf_internals.h中定义的缓存依赖的最大宽度.
+ * 该限制可以通过使用64bit的状态来提升,但它看起来并不值当.
+ * 如果去掉该限制,我们仍然不能够超过:
+ *   a) 2^23-1,因为inval.c使用3个字节的有符号整数存储后台进程ID
+ *   b) INT_MAX/4 ,因为某些地方没有任何的溢出检查,直接计算4*MaxBackends的值.
+ * 该值会在相关的GUC检查钩子和RegisterBackgroundWorker()函数中检查.
  */
 #define MAX_BACKENDS	0x3FFFF
 

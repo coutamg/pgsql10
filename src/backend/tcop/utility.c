@@ -1678,6 +1678,17 @@ ProcessUtilitySlow(ParseState *pstate,
 /*
  * Dispatch function for DropStmt
  */
+/*
+drop table 解析得到如下的表达式
+DropStmt {
+    removeType = OBJECT_TABLE;
+    missing_ok = true;
+    objects = IDENT; // no known keyword
+    behavior = DROP_RESTRICT;
+    concurrent = false;
+}
+具体参数参考 gram.y:6030 DropStmt 的定义
+*/
 static void
 ExecDropStmt(DropStmt *stmt, bool isTopLevel)
 {

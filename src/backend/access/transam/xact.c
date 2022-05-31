@@ -1227,7 +1227,7 @@ RecordTransactionCommit(void)
 		MyPgXact->delayChkpt = true;
 
 		SetCurrentTransactionStopTimestamp();
-
+		// 事务产生的日志落盘
 		XactLogCommitRecord(xactStopTimestamp,
 							nchildren, children, nrels, rels,
 							nmsgs, invalMessages,
@@ -2122,6 +2122,7 @@ CommitTransaction(void)
 	 * Other backends will observe the attendant catalog changes and not
 	 * attempt to access affected files.
 	 */
+	// 事务提交后开始处理需要删除的事情
 	smgrDoPendingDeletes(true);
 
 	AtCommit_Notify();

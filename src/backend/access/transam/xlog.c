@@ -6190,6 +6190,7 @@ CheckRequiredParameterValues(void)
 /*
  * This must be called ONCE during postmaster or standalone-backend startup
  */
+// 日志恢复，系统崩溃的入口
 void
 StartupXLOG(void)
 {
@@ -6220,6 +6221,7 @@ StartupXLOG(void)
 	 * Note: in most control paths, *ControlFile is already valid and we need
 	 * not do ReadControlFile() here, but might as well do it to be sure.
 	 */
+	// 读取 global/pg_control 文件信息，检查是否完整
 	ReadControlFile();
 
 	if (ControlFile->state < DB_SHUTDOWNED ||
@@ -6363,6 +6365,7 @@ StartupXLOG(void)
 	replay_image_masked = (char *) palloc(BLCKSZ);
 	master_image_masked = (char *) palloc(BLCKSZ);
 
+	// 日志文件中扫描到了 backup_label 文件
 	if (read_backup_label(&checkPointLoc, &backupEndRequired,
 						  &backupFromStandby))
 	{
@@ -7021,6 +7024,7 @@ StartupXLOG(void)
 			/*
 			 * main redo apply loop
 			 */
+			// 循环去读 wal 来恢复
 			do
 			{
 				bool		switchedTLI = false;
@@ -7238,6 +7242,7 @@ StartupXLOG(void)
 				}
 
 				/* Else, try to fetch the next WAL record */
+				// 读取 redo 日志
 				record = ReadRecord(xlogreader, InvalidXLogRecPtr, LOG, false);
 			} while (record != NULL);
 
@@ -8529,6 +8534,7 @@ UpdateCheckPointDistanceEstimate(uint64 nbytes)
  * As a result, timing of actions is critical here and be careful to note that
  * this function will likely take minutes to execute on a busy system.
  */
+// 创建 pg 的checkpoint
 void
 CreateCheckPoint(int flags)
 {
@@ -8547,6 +8553,7 @@ CreateCheckPoint(int flags)
 	 * An end-of-recovery checkpoint is really a shutdown checkpoint, just
 	 * issued at a different time.
 	 */
+	// checkpoint 是否与系统关闭有关
 	if (flags & (CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_END_OF_RECOVERY))
 		shutdown = true;
 	else
@@ -8588,7 +8595,7 @@ CreateCheckPoint(int flags)
 	 * Use a critical section to force system panic if we have trouble.
 	 */
 	START_CRIT_SECTION();
-
+	// 如果是 shutdow 去更新 controlFile
 	if (shutdown)
 	{
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
@@ -8623,6 +8630,7 @@ CreateCheckPoint(int flags)
 	 * Get location of last important record before acquiring insert locks (as
 	 * GetLastImportantRecPtr() also locks WAL locks).
 	 */
+	// 获取 xlog 最新的 lsn
 	last_important_lsn = GetLastImportantRecPtr();
 
 	/*
@@ -8640,6 +8648,7 @@ CreateCheckPoint(int flags)
 	if ((flags & (CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_END_OF_RECOVERY |
 				  CHECKPOINT_FORCE)) == 0)
 	{
+		// 没有新的 xlog 生成
 		if (last_important_lsn == ControlFile->checkPoint)
 		{
 			WALInsertLockRelease();
@@ -8684,6 +8693,7 @@ CreateCheckPoint(int flags)
 		else
 			curInsert += SizeOfXLogShortPHD;
 	}
+	// 记录下 xlog 的位置
 	checkPoint.redo = curInsert;
 
 	/*
@@ -8697,6 +8707,7 @@ CreateCheckPoint(int flags)
 	 * XLogInserts that happen while we are dumping buffers must assume that
 	 * their buffer changes are not included in the checkpoint.
 	 */
+	// 将一条名为检查点记录的XLOG记录写入当前WAL段。此记录包含最近的REDO点的位置
 	RedoRecPtr = XLogCtl->Insert.RedoRecPtr = checkPoint.redo;
 
 	/*
@@ -8804,6 +8815,7 @@ CreateCheckPoint(int flags)
 	}
 	pfree(vxids);
 
+	// Clog，Subtrans，Multixact，缓存以及两阶段相关数据刷新到磁盘
 	CheckPointGuts(checkPoint.redo, flags);
 
 	/*
@@ -8824,10 +8836,12 @@ CreateCheckPoint(int flags)
 	 */
 	XLogBeginInsert();
 	XLogRegisterData((char *) (&checkPoint), sizeof(checkPoint));
+	// 将 checkpoint 所有的成员写入到 xlog 中
 	recptr = XLogInsert(RM_XLOG_ID,
 						shutdown ? XLOG_CHECKPOINT_SHUTDOWN :
 						XLOG_CHECKPOINT_ONLINE);
 
+	// 刷新 xlog 的buffer
 	XLogFlush(recptr);
 
 	/*
@@ -11610,6 +11624,8 @@ next_record_is_invalid:
  * mode is triggered by the user, and there is no more WAL available, returns
  * false.
  */
+// 备机使用latch机制等待新日志到来唤醒、处理。
+// 参考 https://blog.csdn.net/jackgo73/article/details/123600955
 static bool
 WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 							bool fetching_ckpt, XLogRecPtr tliRecPtr)
@@ -11779,7 +11795,10 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						TimestampDifference(last_fail_time, now, &secs, &usecs);
 						wait_time = wal_retrieve_retry_interval -
 							(secs * 1000 + usecs / 1000);
-
+						/*
+							循环调用WaitLatch等锁，具体等三件事情：recoveryWakeupLatch、
+							postmaster_alive_fds[POSTMASTER_FD_WATCH]、超时
+						*/
 						WaitLatch(&XLogCtl->recoveryWakeupLatch,
 								  WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 								  wait_time, WAIT_EVENT_RECOVERY_WAL_STREAM);

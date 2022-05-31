@@ -840,7 +840,7 @@ pg_plan_query(Query *querytree, int cursorOptions, ParamListInfo boundParams)
 	if (Debug_print_plan)
 		elog_node_display(LOG, "plan", plan, Debug_pretty_print);
 
-	TRACE_POSTGRESQL_QUERY_PLAN_DONE();
+	TRACE_POSTGRESQL_QUERY_PLAN_DONE();0
 
 	return plan;
 }
@@ -2455,6 +2455,7 @@ start_xact_command(void)
 {
 	if (!xact_started)
 	{
+		// 开启一个事务
 		StartTransactionCommand();
 
 		/* Set statement timeout running, if any */
@@ -2475,7 +2476,7 @@ finish_xact_command(void)
 	{
 		/* Cancel any active statement timeout before committing */
 		disable_timeout(STATEMENT_TIMEOUT, false);
-
+		// 提交事务
 		CommitTransactionCommand();
 
 #ifdef MEMORY_CONTEXT_CHECKING
@@ -3898,6 +3899,7 @@ PostgresMain(int argc, char *argv[],
 		/*
 		 * Abort the current transaction in order to recover.
 		 */
+		// abort 事务
 		AbortCurrentTransaction();
 
 		if (am_walsender)

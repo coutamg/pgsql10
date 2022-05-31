@@ -153,6 +153,7 @@ pull_up_sublinks(PlannerInfo *root)
 	Relids		relids;
 
 	/* Begin recursion through the jointree */
+	// 遍历 query 中的 jointree
 	jtnode = pull_up_sublinks_jointree_recurse(root,
 											   (Node *) root->parse->jointree,
 											   &relids);
@@ -173,18 +174,32 @@ pull_up_sublinks(PlannerInfo *root)
  * In addition to returning the possibly-modified jointree node, we return
  * a relids set of the contained rels into *relids.
  */
-static Node *
-pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
-								  Relids *relids)
+static Node * // 经过子查询提升处理之后的 jtnode 节点
+pull_up_sublinks_jointree_recurse(PlannerInfo *root, // 查询优化模块的上下文信息结构体
+						// 需要递归处理的节点，可能是 RangeTblRef，FromExpr 或 JoinExpr
+						Node *jtnode,
+						Relids *relids)// 输出参数， jtnode参数中涉及的表的集合
 {
 	if (jtnode == NULL)
 	{
 		*relids = NULL;
 	}
+	// RangeTblRef 一定是 Query->jointree 上的叶子节点，递归结束
+	// RangeTblRef 查询中出现的表
+	// 具体可以参考 sql语法语义分析.png 
 	else if (IsA(jtnode, RangeTblRef))
 	{
 		int			varno = ((RangeTblRef *) jtnode)->rtindex;
-
+		/* 执行到这里的两种情况
+			1. 查询语句只有单表，没有连接操作，这种情况递归处理结束，另外去查看
+			   子连接是否满足提升的其他条件。
+			2. 查询语句有连接关系，在对 FromExpr->fomlist、JoinExpr->larg 或者
+			   JoinExpr->rarg 递归的过程中,遍历到了叶子节点 RangeTblRef, 这时候
+			   需要将这个 RangeTblRef 节点的 relids 返回给上一层, 主要用于判断该
+			   子查询能否被提升.
+			   例如.子连接的左操作数如果是左连接的 LHS 的一个列属性，则这个子连接就
+			       不能提升.具体参考 JoinExpr
+		*/
 		*relids = bms_make_singleton(varno);
 		/* jtnode is returned unmodified */
 	}
@@ -202,10 +217,12 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 		{
 			Node	   *newchild;
 			Relids		childrelids;
-
+		   // 对 FrornExpr->fromlist 中的节点做递归遍历，对每个节点递归调用
+		   // pull_up_sublinks_jointree_recurse，一直处理到叶子节点 RangeTblRef 才返回。
 			newchild = pull_up_sublinks_jointree_recurse(root,
 														 lfirst(l),
 														 &childrelids);
+			// target list 拼接成一个 list
 			newfromlist = lappend(newfromlist, newchild);
 			frelids = bms_join(frelids, childrelids);
 		}
@@ -214,6 +231,7 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 		/* Set up a link representing the rebuilt jointree */
 		jtlink = (Node *) newf;
 		/* Now process qual --- all children are available for use */
+		// 处理 FrornExpr->qual 对其中可能出现的 ANY SUBLINK 或 EXISTS SUBLINK 做处理
 		newf->quals = pull_up_sublinks_qual_recurse(root, f->quals,
 													&jtlink, frelids,
 													NULL, NULL);
@@ -265,6 +283,7 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 		 */
 		switch (j->jointype)
 		{
+			// 连接的左操作数可以是LHS或者RHS 的列属性，均可提升
 			case JOIN_INNER:
 				j->quals = pull_up_sublinks_qual_recurse(root, j->quals,
 														 &jtlink,
@@ -272,6 +291,7 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 																   rightrelids),
 														 NULL, NULL);
 				break;
+			// 左操作数只 能是RHS 的列属性子连接才能提升
 			case JOIN_LEFT:
 				j->quals = pull_up_sublinks_qual_recurse(root, j->quals,
 														 &j->rarg,
@@ -281,6 +301,7 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 			case JOIN_FULL:
 				/* can't do anything with full-join quals */
 				break;
+			// 左操作数只能是LHS 的列属性子连接才能提升
 			case JOIN_RIGHT:
 				j->quals = pull_up_sublinks_qual_recurse(root, j->quals,
 														 &j->larg,
@@ -309,6 +330,7 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
 	else
 		elog(ERROR, "unrecognized node type: %d",
 			 (int) nodeTag(jtnode));
+	// 返回 Query->jointree 上的叶子节点
 	return jtnode;
 }
 
@@ -327,6 +349,7 @@ pull_up_sublinks_jointree_recurse(PlannerInfo *root, Node *jtnode,
  *
  * Returns the replacement qual node, or NULL if the qual should be removed.
  */
+// 提升子连接
 static Node *
 pull_up_sublinks_qual_recurse(PlannerInfo *root, Node *node,
 							  Node **jtlink1, Relids available_rels1,
@@ -397,6 +420,7 @@ pull_up_sublinks_qual_recurse(PlannerInfo *root, Node *node,
 		}
 		else if (sublink->subLinkType == EXISTS_SUBLINK)
 		{
+			// EXISTS 类型的子连接提升
 			if ((j = convert_EXISTS_sublink_to_join(root, sublink, false,
 													available_rels1)) != NULL)
 			{
@@ -607,6 +631,7 @@ void
 pull_up_subqueries(PlannerInfo *root)
 {
 	/* Top level of jointree must always be a FromExpr */
+	// jointree 包在 FromExpr 中
 	Assert(IsA(root->parse->jointree, FromExpr));
 	/* Reset flag saying we need a deletion cleanup pass */
 	root->hasDeletedRTEs = false;
@@ -669,8 +694,10 @@ pull_up_subqueries(PlannerInfo *root)
  * root->hasDeletedRTEs flag, which tells pull_up_subqueries() that an
  * additional pass over the tree is needed to clean up.
  */
-static Node *
-pull_up_subqueries_recurse(PlannerInfo *root, Node *jtnode,
+static Node * // 经过子查询提升处理之后的 jtnode 节点
+pull_up_subqueries_recurse(PlannerInfo *root, // 查询优化模块的上下文信息结构体
+						   // 需要递归处理的节点， 可能是 RangeTblRef,FromExpr或 JoinExpr
+						   Node *jtnode,
 						   JoinExpr *lowest_outer_join,
 						   JoinExpr *lowest_nulling_outer_join,
 						   AppendRelInfo *containing_appendrel,

@@ -918,6 +918,7 @@ LogStandbySnapshot(void)
 	/*
 	 * Get details of any AccessExclusiveLocks being held at the moment.
 	 */
+	// 把锁的信息刷入到 wal 中
 	locks = GetRunningTransactionLocks(&nlocks);
 	if (nlocks > 0)
 		LogAccessExclusiveLocks(nlocks, locks);

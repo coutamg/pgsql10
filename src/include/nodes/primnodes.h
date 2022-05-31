@@ -184,7 +184,7 @@ typedef struct Var
 	/* 确定了这个列属性是表中的第几列 
 		创建表的时候 ， PostgreSQL 数据库会按照 SQL 语句中指 定的列的顺序给列属性编号，
 		并将编号记录在 PG_ATTRIBUTES 系统表中.
-		varattno 、 va此ype、 va问rpemod 都是取自 PG_ATTRIBUTES 系统表中的
+		varattno 、 va此ype、 vartypmod 都是取自 PG_ATTRIBUTES 系统表中的
 	*/
 	AttrNumber	varattno;		/* attribute number of this var, or zero for
 								 * all */
@@ -214,10 +214,10 @@ typedef struct Var
 	int			location;		/* token location, or -1 if unknown */
 } Var;
 /*
-SELECT st.sname FROM STUDENT st WHERE st. sno =
+SELECT st.sname FROM STUDENT st WHERE st.sno =
 	ANY (SELECT sno FROM SCORE WHERE st.sno = sno)
 
-上面的查询属性st.sno(列)对应的 var 如下：
+上面的子查询中属性st.sno(列)对应的 var 如下：
 varno = 1,父查询只有一个表STUDENT，所以处在Query->rtable链表的第一个 
 varattno = 1, st.sno 是 STUDENT 表的第 1 列
 vartype = 23 int 类型，参考 pg_type.h
@@ -676,11 +676,13 @@ typedef struct BoolExpr
  * The CTE_SUBLINK case never occurs in actual SubLink nodes, but it is used
  * in SubPlans generated for WITH subqueries.
  */
+// 子查询/连接的类型，pg 主要对 EXISTS_SUBLINK，ANY_SUBLINK 进行提升
+// EXISTS 类型的相关子连接会被提升 ，非相关子连接会形成子执行计划单独求解
 typedef enum SubLinkType
 {
-	EXISTS_SUBLINK,
-	ALL_SUBLINK,
-	ANY_SUBLINK,
+	EXISTS_SUBLINK, // [NOT] EXISTS 谓词
+	ALL_SUBLINK, // ALL 谓词
+	ANY_SUBLINK, // ANY/IN/SOME 谓词 
 	ROWCOMPARE_SUBLINK,
 	EXPR_SUBLINK,
 	MULTIEXPR_SUBLINK,
@@ -692,14 +694,32 @@ typedef enum SubLinkType
 typedef struct SubLink
 {
 	Expr		xpr;
+	// 子连接类型
 	SubLinkType subLinkType;	/* see above */
+	// 编号
 	int			subLinkId;		/* ID (1..n); 0 if not MULTIEXPR */
+	// 针对不同谓词的操作
 	Node	   *testexpr;		/* outer-query test for ALL/ANY/ROWCOMPARE */
+	// 子连接的操作符
 	List	   *operName;		/* originally specified operator name */
+	// 子连接中的子句所产生的查询树
 	Node	   *subselect;		/* subselect as Query* or raw parsetree */
+	// 关键字在 SQL 语句中的位置
 	int			location;		/* token location, or -1 if unknown */
 } SubLink;
-
+/*
+	例: SELECT sname FROM STUDENT WHERE sno > ANY (SELECT sno FROM SCORE)
+		子连接语句是 sno ＞ANY (SELECT sno FROM SCORE）
+	
+	subLinkType: ANY谓词产生的 ANY SUBLINK
+	subLinkId: 语句中只有－个子连接, 编号为 1
+	testexpr: 操作符表达式，左操作数是Var，代表 STUDENT.sno ，操作符是“>”，
+			  右操作数类型是 Param, 代表 SCORE.sno, 也就是子连接中的投影列
+			  (targetlist)
+	operName: 操作符是“>”
+	subselect: 子连接中的子句生成的查询树(Query), 这里是SQL语句中的 
+			   “SELECT sno FROM SCORE” 生成的查询树
+*/
 /*
  * SubPlan - executable expression node for a subplan (sub-SELECT)
  *
@@ -1524,7 +1544,7 @@ typedef struct JoinExpr
 	bool		isNatural;		/* Natural join? Will need to shape table */
 	// 连接操作的 LHS （左侧）的表
 	Node	   *larg;			/* left subtree */
-	// 连接操作的阳s （右侧） 的表
+	// 连接操作的 RHS （右侧） 的表
 	Node	   *rarg;			/* right subtree */
 	// using 子句	
 	List	   *usingClause;	/* USING clause, if any (list of String) */
@@ -1535,6 +1555,13 @@ typedef struct JoinExpr
 	// 这个 JoinExpr 对应的 RangeTblRef->rti ndex，没有则为0
 	int			rtindex;		/* RT index assigned for join, or 0 */
 } JoinExpr;
+/*
+	SELECT * FROM STUDENT LEFT JOIN SCORE ON TRUE 
+		
+		LEFT JOIN COURSE ON SCORE.cno = COURSE.cno;
+
+	JoinExpr 的内存结构示意图见 joinExpr1.png
+ */
 
 /*----------
  * FromExpr - represents a FROM ... WHERE ... construct
@@ -1545,12 +1572,30 @@ typedef struct JoinExpr
  * of the outputs of the children.
  *----------
  */
+/*
+FromExpr 和 JoinExpr 是用来表示表之间的连接关系的结构体, 通常来说, 
+FromExpr 中的各个表之间的连接关系是 Inner Join，这样就可以在 
+FromExpr->frornlist 中保存任意多个表，默认它们之间是内连接的关系.
+*/
 typedef struct FromExpr
 {
 	NodeTag		type;
+	// FromExpr 中包含几个表
 	List	   *fromlist;		/* List of join subtrees */
+	// fromlist 中的表之间的约束条件
 	Node	   *quals;			/* qualifiers on join, if any */
 } FromExpr;
+
+/*
+	1. SELECT * FROM STUDENT, SCORE, COURSE WHERE STUDENT.sno = SCORE.sno;
+		3 个表没有明确地指定连接关系，默认它们是 InnerJoin，因此可以通过 FromExpr 
+		来表示，FromExpr－＞fromlist 中保存了语句中的 3 个表，FromExpr->quals 中
+		保存了 STUDENT.sno = SCORE.sn 这个约束条件
+
+	2. SELECT *FROM STUDENT, SCORE LEFr JOIN COURSE ON SCORE.coo = COURSE.coo;
+	  
+	例1 与 例2 FromExpr 结构见图 FromExpr1.png
+*/
 
 /*----------
  * OnConflictExpr - represents an ON CONFLICT DO ... expression

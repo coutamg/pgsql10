@@ -92,6 +92,7 @@
 #include "utils/hsearch.h"
 #endif
 
+// 锁的拓展参考 轻量锁模块的两种拓展方式.png
 
 /* We use the ShmemLock spinlock to protect LWLockCounter */
 extern slock_t *ShmemLock;
@@ -121,6 +122,9 @@ static int	LWLockTranchesAllocated = 0;
  * This points to the main array of LWLocks in shared memory.  Backends inherit
  * the pointer by fork from the postmaster (except in the EXEC_BACKEND case,
  * where we have special measures to pass it down).
+ * 
+ * Individual LWLocks被保存在MainLWLockArray数组中，每种Individual LWLocks
+ * 都有自己固定要保护的对象
  */
 LWLockPadded *MainLWLockArray = NULL;
 
@@ -536,6 +540,9 @@ InitLWLockAccess(void)
  * Caller needs to retrieve the requested number of LWLocks starting from
  * the base lock address returned by this API.  This can be used for
  * tranches that are requested by using RequestNamedLWLockTranche() API.
+ * 
+ * 根据TrancheName来获得对应的轻量锁。每个Tranche都有自己唯一的ID，也在全局范围内有
+ * 一个唯一的名字，也就是说Tranche ID和Tranche Name是一一对应的关系
  */
 LWLockPadded *
 GetNamedLWLockTranche(const char *tranche_name)
@@ -567,6 +574,8 @@ GetNamedLWLockTranche(const char *tranche_name)
 
 /*
  * Allocate a new tranche ID.
+ * 获得新的Tranche ID
+ * 
  */
 int
 LWLockNewTrancheId(void)
@@ -622,6 +631,8 @@ LWLockRegisterTranche(int tranche_id, char *tranche_name)
  * will be ignored.  (We could raise an error, but it seems better to make
  * it a no-op, so that libraries containing such calls can be reloaded if
  * needed.)
+ * 
+ * 负责注册Tranche的名字及自己所需的轻量锁的数量
  */
 void
 RequestNamedLWLockTranche(const char *tranche_name, int num_lwlocks)
@@ -875,11 +886,13 @@ LWLockWakeup(LWLock *lock)
 
 	/* lock wait list while collecting backends to wake up */
 	LWLockWaitListLock(lock);
-
+	// 参考 lwlock-wakeup.png
 	proclist_foreach_modify(iter, &lock->waiters, lwWaitLink)
 	{
 		PGPROC	   *waiter = GetPGProcByNumber(iter.cur);
 
+		// 如果等待队列中的第一个申请者申请的是共享锁，那么等待队列中的所有共享锁都
+		// 可以被唤醒，只剩排他锁继续等待
 		if (wokeup_somebody && waiter->lwWaitMode == LW_EXCLUSIVE)
 			continue;
 
@@ -905,6 +918,7 @@ LWLockWakeup(LWLock *lock)
 		 * Once we've woken up an exclusive lock, there's no point in waking
 		 * up anybody else.
 		 */
+		// 等待队列中的第一个申请者申请的是排他锁，则只有这一个申请者被唤醒，其他申请者需要继续等待
 		if (waiter->lwWaitMode == LW_EXCLUSIVE)
 			break;
 	}
@@ -1755,6 +1769,7 @@ LWLockRelease(LWLock *lock)
 	 * We're still waiting for backends to get scheduled, don't wake them up
 	 * again.
 	 */
+	// 释放封锁的时候，如果发现锁已经没有持有者，则要考虑唤醒等待队列中的等待者
 	if ((oldstate & (LW_FLAG_HAS_WAITERS | LW_FLAG_RELEASE_OK)) ==
 		(LW_FLAG_HAS_WAITERS | LW_FLAG_RELEASE_OK) &&
 		(oldstate & LW_LOCK_MASK) == 0)
@@ -1770,6 +1785,7 @@ LWLockRelease(LWLock *lock)
 	{
 		/* XXX: remove before commit? */
 		LOG_LWDEBUG("LWLockRelease", lock, "releasing waiters");
+		// 唤醒等待队列中的等待者
 		LWLockWakeup(lock);
 	}
 

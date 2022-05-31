@@ -95,8 +95,17 @@ typedef struct ProcArrayStruct
 	int			pgprocnos[FLEXIBLE_ARRAY_MEMBER];
 } ProcArrayStruct;
 
+/* 可参考 https://www.modb.pro/db/42707
+	procArray 的 pgprocnos 维护了每一个 pggrocno 对应的 PGPROC 与 PGXACT 
+	具体可以参考 GetSnapshotData。
+	当一个写事务提交时，进程要修改自己的PGPROC结构来标识自己已经结束了，其中的一个主要动
+	作是重置自己事务ID(xid)， 为了简化我们后面就管这个过程叫重置xid，这时需要以排它的方
+	式获取ProcArrayLock锁，以防拿事务Snapshot的进程看到不一致的结果
+*/
 static ProcArrayStruct *procArray;
 
+// PostgreSQL中每个Session的执行时的一些关键的状态信息都保存在PGPROC这个结构当中
+// ProcGlobal 指向下面两个
 static PGPROC *allProcs;
 static PGXACT *allPgXact;
 
@@ -392,6 +401,13 @@ ProcArrayRemove(PGPROC *proc, TransactionId latestXid)
  * contents, because the subxid information in the PGPROC might be
  * incomplete.)
  */
+/*
+* 当一个写事务提交时，进程要修改自己的PGPROC结构来标识自己已经结束了，其中的一个主要动作是重置自己
+* 事务ID(xid)， 为了简化我们后面就管这个过程叫重置xid，这时需要以排它的方式获取ProcArrayLock
+* 锁，以防拿事务Snapshot的进程看到不一致的结果。 当有很多事务提交时，每一个要提交的进程依次唤醒、
+* 拿锁、放锁，导致该锁的过度争用。为了提高效率这个Patch只让一个进程获取ProcArrayLock锁， 由该进
+* 程为所有同时提交的其他进程（Patch里叫一个ProcArray组）集中批量修改。
+*/
 void
 ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 {
@@ -412,6 +428,7 @@ ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 		 * and release the lock.  If not, use group XID clearing to improve
 		 * efficiency.
 		 */
+		// 首先在事务提交时尝试去获取ProcArrayLock，如果获取到了就直接调用重置xid函数
 		if (LWLockConditionalAcquire(ProcArrayLock, LW_EXCLUSIVE))
 		{
 			ProcArrayEndTransactionInternal(proc, pgxact, latestXid);
@@ -493,8 +510,18 @@ ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid)
 	/* Add ourselves to the list of processes needing a group XID clear. */
 	proc->procArrayGroupMember = true;
 	proc->procArrayGroupMemberXid = latestXid;
+	/*
+	 * 这段代码通过对位于PROC_HDR结构中的ProcArray组头部进行CAS原子操作，不断的尝试将
+	 * 自己加入到ProcArray组中， 这里是通过存储其pgprocno（相当于PGPROC数组下标），
+	 * 形成一个用pgprocno串起来的链表。 注意在以上3条语句之间随时有可能由其他进程插进来
+	 * 把它们自己加到ProcArray组中导致CAS操作失败， 失败之后程序会进行下一次循环直到成功。
+	 * 执行完这段代码变量nexidx存储的是原ProcArray组的头部， 代码通过比较nextidx来
+	 * 判断是否是ProcArray组的第一个成员即Leader，Leader的nextidx应该是初值INVALID_PGPROCNO，
+	 * 由Leader负责整个组的重置xid工作，非Leader成员只需等待Leader完成工作后通知自己即可
+	 */
 	while (true)
-	{
+	{	
+		//首先将自己加到ProcArray组的头部
 		nextidx = pg_atomic_read_u32(&procglobal->procArrayGroupFirst);
 		pg_atomic_write_u32(&proc->procArrayGroupNext, nextidx);
 
@@ -542,6 +569,11 @@ ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid)
 	 * group XID clearing, saving a pointer to the head of the list.  Trying
 	 * to pop elements one at a time could lead to an ABA problem.
 	 */
+	/*
+	 * ProcArray组的Leader先获取PROCArray锁，然后从组头部拿到第一个元素，并把组头
+	 * 置成初值INVALID_PGPROCNO， 这时其他进程可以开始一个新的ProcArray组
+	 * 注意在执行这段代码过程中，还会不断有新到组成员加进来，所以使用了while循环。
+	*/
 	while (true)
 	{
 		nextidx = pg_atomic_read_u32(&procglobal->procArrayGroupFirst);
@@ -575,6 +607,8 @@ ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid)
 	 * minimum.  The system calls we need to perform to wake other processes
 	 * up are probably much slower than the simple memory writes we did while
 	 * holding the lock.
+	 * ProcArray组的Leader循环组列表对每个成员调用重置xid函数， 最后在释放了ProcArrayLock
+	 * 锁之后通知每个组成员继续执行。
 	 */
 	while (wakeidx != INVALID_PGPROCNO)
 	{
