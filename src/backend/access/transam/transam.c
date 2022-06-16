@@ -304,10 +304,26 @@ TransactionIdPrecedes(TransactionId id1, TransactionId id2)
 	 * comparison.  If both are normal, do a modulo-2^32 comparison.
 	 */
 	int32		diff;
-
+	/* 若其中一个不是普通id，则其一定较新（较大） */
 	if (!TransactionIdIsNormal(id1) || !TransactionIdIsNormal(id2))
 		return (id1 < id2);
 
+	/* 两个事务ID相减后转为int 32类型 
+	 * 由于int 32带符号，需要用第一位表示符号位，所以它能表示的正数比unsigned int 32
+	 * 类型少一半，int 32的数据取值范围为[-2^(n-1),2^(n-1)-1]，即[-2^31,2^31-1]。
+	 * 当两个txid相减结果>2^31时，转为int 32后其实是个负数（符号位从0变成了1）.
+	 * 
+	 * 例如：d1=2^31+101，id2=100。id1-id2=2^31+1，
+	 * 用二进制表示即：100...中间30个0...001。当转为int 32后，由于第一位为符号位，
+	 * 而1表示负数，所以转换后这个值其实就是-1，小于0，因此txid=2^31+101的事务反而要旧。
+	 * 
+	 * 上面的方法还是有问题，如果上面的100真的是非常非常旧的事务，那它确实应该被2^31+101
+	 * 这个事务看见，此时上面的判断就是错的。
+	 * 
+	 * 也就是说如果id2确实是回卷前的txid，上面的判断方法就会出现问题。为了避免这种问题，
+	 * pg必须保证一个数据库中两个有效的事务之间的年龄最多是2^31（同一个数据库中，存在的
+	 * 最旧和最新两个事务txid相差不得超过2^31）
+	*/
 	diff = (int32) (id1 - id2);
 	return (diff < 0);
 }

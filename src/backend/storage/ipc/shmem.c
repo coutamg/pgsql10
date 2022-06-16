@@ -122,6 +122,7 @@ InitShmemAllocation(void)
 	 */
 	ShmemLock = (slock_t *) ShmemAllocUnlocked(sizeof(slock_t));
 
+	/* 给该共享内存初始化 spinlock 锁 ShmemLock 以备 shmem 分配时使用 */
 	SpinLockInit(ShmemLock);
 
 	/*
@@ -140,6 +141,10 @@ InitShmemAllocation(void)
 	/*
 	 * Initialize ShmemVariableCache for transaction manager. (This doesn't
 	 * really belong here, but not worth moving.)
+	 * 这个涉及到 pg 的另一块内存 —— 共享内存/shared memory/shmem的管理机制，
+	 * 共享内存占 pg 整个使用内存的90%以上。
+	 * 给事务管理器 transaction manager 在 shmem 上分配一个 VariableCacheData 类型的
+	 * 空间赋给 VariableCacheData * 类型变量 ShmemVariableCache 以备后用
 	 */
 	ShmemVariableCache = (VariableCache)
 		ShmemAlloc(sizeof(*ShmemVariableCache));
@@ -267,6 +272,14 @@ ShmemAddrIsValid(const void *addr)
 
 /*
  *	InitShmemIndex() --- set up or attach to shmem index table.
+ *
+ * "ShmemIndex" 作为 共享内存/sharedmemory/shmem的索引。Pg基于该索引表
+ * "ShmemIndex"管理 shmem 内存。这里就是HTAB、HASHHDR、HashSegment、
+ * HashBucket、HashElemen 等等一堆招呼，可扩展哈希表" ShmemIndex" 诞生了。
+ * 其中的 HTAB 在 TopMemoryContext 里，其它在 shmem 里，"ShmemIndex"
+ * 哈希表里存的是 ShmemIndexEnt 类型实例，记录 shmem 里每个内存块的名字、大小及
+ * 偏移信息。按默认信息创建的 "ShmemIndex" 哈希表可以管理 64M 以上个内存片段（
+ * 每个哈希桶的开链表按1个元素计算）
  */
 void
 InitShmemIndex(void)
@@ -285,7 +298,7 @@ InitShmemIndex(void)
 	info.keysize = SHMEM_INDEX_KEYSIZE;
 	info.entrysize = sizeof(ShmemIndexEnt);
 	hash_flags = HASH_ELEM;
-
+	/* ShmemIndex 在 TopMemoryContext 内 */
 	ShmemIndex = ShmemInitHash("ShmemIndex",
 							   SHMEM_INDEX_SIZE, SHMEM_INDEX_SIZE,
 							   &info, hash_flags);

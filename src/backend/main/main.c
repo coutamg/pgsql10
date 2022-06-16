@@ -95,6 +95,8 @@ main(int argc, char *argv[])
 	 * Code after this point is allowed to use elog/ereport, though
 	 * localization of messages may not work right away, and messages won't go
 	 * anywhere but stderr until GUC settings get loaded.
+	 * 
+	 * postgres 启动的时候会创建 TopMemoryContext
 	 */
 	MemoryContextInit();
 
@@ -220,7 +222,7 @@ main(int argc, char *argv[])
 		AuxiliaryProcessMain(argc, argv);	/* does not return */
 	else if (argc > 1 && strcmp(argv[1], "--describe-config") == 0)
 		GucInfoMain();			/* does not return */
-	else if (argc > 1 && strcmp(argv[1], "--single") == 0)
+	else if (argc > 1 && strcmp(argv[1], "--single") == 0) /* single mode */
 		PostgresMain(argc, argv,
 					 NULL,		/* no dbname */
 					 strdup(get_user_name_or_exit(progname)));	/* does not return */

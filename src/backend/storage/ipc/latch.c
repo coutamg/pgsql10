@@ -144,13 +144,22 @@ static inline int WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
  * This must be called once during startup of any process that can wait on
  * latches, before it issues any InitLatch() or OwnLatch() calls.
  */
+/*
+* InitializeLatchSupport 函数初始化 process-local latch设施。该函数必须在任何进程启动
+* 过程中 InitLactch 或 OwnLatch 函数调用之前调用。
+* 如果是在 postmaster 子进程中，selfpipe_owner_pid 是用于设置该进程是否拥有 self-pipe
+* 的标志（拥有 selfpipe 的进程 pid）。如果 selfpipe_owner_pid 不为零，说明现在我们子进程
+* 继承了 postmaster 创建的 self-pipe 的连接。我们先要关闭 postmaster 创建的 self-pipe 
+* 的连接，然后才可以创建自己的 self-pipes。
+* 建立运行信号处理函数唤醒 WaitLatch 函数中的 poll、epoll_wait 的 self-pipe
+*/
 void
 InitializeLatchSupport(void)
 {
 #ifndef WIN32
 	int			pipefd[2];
 
-	if (IsUnderPostmaster)
+	if (IsUnderPostmaster) /* 在postmaster子进程中 */
 	{
 		/*
 		 * We might have inherited connections to a self-pipe created by the
@@ -162,7 +171,9 @@ InitializeLatchSupport(void)
 		{
 			/* Assert we go through here but once in a child process */
 			Assert(selfpipe_owner_pid != MyProcPid);
-			/* Release postmaster's pipe FDs; ignore any error */
+			/* Release postmaster's pipe FDs; ignore any error 
+			 * 释放 postmaster 的 pipe FD
+			*/
 			(void) close(selfpipe_readfd);
 			(void) close(selfpipe_writefd);
 			/* Clean up, just for safety's sake; we'll set these below */
@@ -216,6 +227,11 @@ InitializeLatchSupport(void)
 
 /*
  * Initialize a process-local latch.
+ * InitLatch 函数初始化进程本地的 latch（自己初始化自己的latch）。
+ * Latch 结构体包含 is_set、is_stared、owner_pid 三个成员
+ * 
+ * InitLatch 函数初始化 Latch 结构体，is_set 设置为 false，owner_pid 
+ * 为自己的进程 pid，is_shared 设置为 false
  */
 void
 InitLatch(volatile Latch *latch)
@@ -248,6 +264,11 @@ InitLatch(volatile Latch *latch)
  * Note that other handles created in this module are never marked as
  * inheritable.  Thus we do not need to worry about cleaning up child
  * process references to postmaster-private latches or WaitEventSets.
+ * 
+ * InitSharedLatch 初始化一个共享 latch（可以从其他进程 set 这个 latch），初始
+ * 化完 latch 不属于任何进程，使用 OwnLatch 将该 latch 和当前进程关联。
+ * InitSharedLatch 必须在 postmasster fork 子进程前由 postmaster 调用，
+ * 通常在 ShmemInitStruct 分配包含 Latch 的共享内存块之后调用
  */
 void
 InitSharedLatch(volatile Latch *latch)
@@ -284,6 +305,13 @@ InitSharedLatch(volatile Latch *latch)
  * In any process that calls OwnLatch(), make sure that
  * latch_sigusr1_handler() is called from the SIGUSR1 signal handler,
  * as shared latches use SIGUSR1 for inter-process communication.
+ * 
+ * OwnLatch 将一个共享 latch 关联到当前进程上，允许该进程在该 latch上 等待。尽管
+ * 有 latch 是否有所属的检查，但是我们在这里没有采用任何锁机制，所以我们不能在两个进
+ * 程在同时对同一个锁竞争所属权时检测出来错误。这种情况下，调用者必须提供一个 interlock
+ * 来包含 latch 的所属权。任何进程调用 OwnLatch 函数，必须确保 latch_sigusr1_handler
+ * 函数由 SIGUSR1 信号处理 handler 调用，因为 shared latch 使用 SIGUSER1 作为进程间
+ * 通信机制
  */
 void
 OwnLatch(volatile Latch *latch)
@@ -304,6 +332,7 @@ OwnLatch(volatile Latch *latch)
 
 /*
  * Disown a shared latch currently owned by the current process.
+ * 将一个共享 latch 和当前进程解关联
  */
 void
 DisownLatch(volatile Latch *latch)
@@ -332,6 +361,19 @@ DisownLatch(volatile Latch *latch)
  * Returns bit mask indicating which condition(s) caused the wake-up. Note
  * that if multiple wake-up conditions are true, there is no guarantee that
  * we return all of them in one call, but we will return at least one.
+ * 
+ * WaitLatch 等待给定的 latch 被设置，或者是 postmaster death 或者是超时。wakeEvents
+ * 是用于指定等待哪种类型事件的掩码。如果 latch 已经被设置（WL_LATCH_SET已经给定），函数
+ * 立即返回。
+ * 
+ * 超时时间以毫秒为单位，如果 WL_TIMEOUT 标志设置了的话，超时时间必须大于等于0。尽管超时时间
+ * 的类型为 log，我们并不支持超时时间长于 INT_MAX 毫秒。
+ * 
+ * latch 必须由当前进程拥有，才能 Wait。比如，它必须是一个用 InitLatch 初始化的进程本地锁存器，
+ * 或者通过调用 OwnLatch 与当前进程关联的共享锁存器。
+ * 
+ * 返回指示哪种条件导致当前进程在该 latch上 被唤醒的掩码。如果是多个唤醒条件，我们不能保证在
+ * 单次调用中返回所有的条件，但是会至少返回一条
  */
 int
 WaitLatch(volatile Latch *latch, int wakeEvents, long timeout,
@@ -352,6 +394,18 @@ WaitLatch(volatile Latch *latch, int wakeEvents, long timeout,
  * NB: These days this is just a wrapper around the WaitEventSet API. When
  * using a latch very frequently, consider creating a longer living
  * WaitEventSet instead; that's more efficient.
+ * 
+ * WaitLatch 就是调用 WaitLatchOrSocket 函数，WaitLatchOrSocket 比 WaitLatch 多了
+ * 一个 pgsocket 形参（WL_SOCKET_*）。WaitLatch 调用时使用 PGINVALID_SOCKET，表示是
+ * 在 latch 上 wait。
+ * 
+ * 当在一个 socket 上等待时，EOF 和 error conditions 总是会导致 socket 被反馈为
+ * readable/writable/connected，所以调用者必须处理这种情况。
+ * 
+ * wakeEvents 必须包含或者 WL_EXIT_ON_PM_DEATH 或者是 WL_POSTMASTER_DEATH 。
+ * WL_EXIT_ON_PM_DEATH 用于在 postmaster die 时自动退出。
+ * WL_POSTMASTER_DEATH 用于在 postmaster die 时在 WaitLatchOrSocket 函数返
+ * 回掩码中设置 WL_POSTMASTER_DEATH 标志，以表明 postmaster die。
  */
 int
 WaitLatchOrSocket(volatile Latch *latch, int wakeEvents, pgsocket sock,
@@ -481,6 +535,13 @@ pfree(set)
  *
  * NB: this function is called from critical sections and signal handlers so
  * throwing an error is not a good idea.
+ * 
+ * SetLatch 函数设置一个 latch，唤醒等待的任何进程。如果在信号处理函数中调用该函数，
+ * 确保在该函数之前和之后保存和恢复 errno。主要工作就是设置 latch中 的is_set，然后
+ * 唤醒等待的进程（如果有的话）。
+ * 如果是当前进程在等待该 latch，说明我们是在信号处理函数中设置的 Latch，我们使用
+ * self-pipe 唤醒 poll 或 epoll_wait。如果是其他进程在等待该 latch，则发送一个
+ * SIGUSR1 信号。
  */
 void
 SetLatch(volatile Latch *latch)
@@ -498,7 +559,7 @@ SetLatch(volatile Latch *latch)
 	 */
 	pg_memory_barrier();
 
-	/* Quick exit if already set */
+	/* Quick exit if already set 如果已经设置，直接返回 */
 	if (latch->is_set)
 		return;
 
@@ -564,6 +625,9 @@ SetLatch(volatile Latch *latch)
 /*
  * Clear the latch. Calling WaitLatch after this will sleep, unless
  * the latch is set again before the WaitLatch call.
+ * 
+ * 清除 latch 的 is_set。在该函数调用之后调用 WaitLatch 会进入睡眠，除非在调用
+ * WaitLatch 之前 latch 又被设置了。
  */
 void
 ResetLatch(volatile Latch *latch)
@@ -1605,6 +1669,7 @@ retry:
  * Note: this is only called when waiting = true.  If it fails and doesn't
  * return, it must reset that flag first (though ideally, this will never
  * happen).
+ * 从self-pipe中读取所有可以获取的数据。只有当waiting为true，才会调用该函数。
  */
 #ifndef WIN32
 static void

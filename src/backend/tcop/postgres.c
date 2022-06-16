@@ -84,7 +84,9 @@
  */
 const char *debug_query_string; /* client-supplied query string */
 
-/* Note: whereToSendOutput is initialized for the bootstrap/standalone case */
+/* Note: whereToSendOutput is initialized for the bootstrap/standalone case 
+ * 在 BackendInitialize 中 whereToSendOutput 被设置为 DestRemote
+ */
 CommandDest whereToSendOutput = DestDebug;
 
 /* flag for logging end of session */
@@ -926,6 +928,7 @@ exec_simple_query(const char *query_string)
 	 * BEGIN/COMMIT/ABORT statement; we have to force a new xact command after
 	 * one of those, else bad things will happen in xact.c. (Note that this
 	 * will normally change current memory context.)
+	 * 事务的入口函数
 	 */
 	start_xact_command();
 

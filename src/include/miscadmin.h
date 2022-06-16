@@ -127,7 +127,9 @@ do { \
 	Assert(QueryCancelHoldoffCount > 0); \
 	QueryCancelHoldoffCount--; \
 } while(0)
-
+/* 参考 https://www.modb.pro/db/26852 
+ * https://blog.csdn.net/qq_37517281/article/details/105956813
+ */
 #define START_CRIT_SECTION()  (CritSectionCount++)
 
 #define END_CRIT_SECTION() \

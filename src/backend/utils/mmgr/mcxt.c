@@ -48,6 +48,21 @@ MemoryContext MessageContext = NULL;
 MemoryContext TopTransactionContext = NULL;
 MemoryContext CurTransactionContext = NULL;
 
+/*
+                   			+------------------+
+				   			| TopMemoryContext |
+				   			+--------+---------+
+		 +---------------------------|-----------------------+------------->...
+		\|/							\|/						\|/
+	+--------------------+     +----------------+   +--------------+
+	| CacheMemoryContext |     | MessageContext |   | ErrorContext |
+	+---------+----------+     +----------------+   +--------------+
+              |
+	+---------+-----------+------>...
+   \|/       \|/         \|/
+ [CacheHDR] [Cache]     [Cache]
+*/
+
 /* This is a transient link to the active portal's memory context: */
 MemoryContext PortalContext = NULL;
 
@@ -60,6 +75,9 @@ static void MemoryContextStatsInternal(MemoryContext context, int level,
  * You should not do memory allocations within a critical section, because
  * an out-of-memory error will be escalated to a PANIC. To enforce that
  * rule, the allocation functions Assert that.
+ * 
+ * 不应该在临界区进行内存分配，因为内存不足错误将升级为PANIC。为了实施该规则，分配函数
+ * Assert that
  */
 #define AssertNotInCriticalSection(context) \
 	Assert(CritSectionCount == 0 || (context)->allowInCritSection)
@@ -86,11 +104,11 @@ static void MemoryContextStatsInternal(MemoryContext context, int level,
  * In a standalone backend this must be called during backend startup.
  */
 /*
-	1. 使用特定的内存管理方式，以及特定的内存管理函数，减少了malloc和free的使用，降低了开发复杂度，
-		并减少了内存泄漏的风险；
-	2. 由于malloc是会针对多线程进行一定设计，所以加了一定的锁，当内存进行频繁申请和释放时，会有一
-		定的性能损耗，PG释放MemoryContext首先会将其加入到freelist中，减少malloc的频率，提高内
-		存申请的效率。
+ * 1. 使用特定的内存管理方式，以及特定的内存管理函数，减少了malloc和free的使用，
+ * 	 降低了开发复杂度，并减少了内存泄漏的风险；
+ * 2. 由于malloc是会针对多线程进行一定设计，所以加了一定的锁，当内存进行频繁申请
+ * 	 和释放时，会有一定的性能损耗，PG释放MemoryContext首先会将其加入到
+ * 	 freelist中，减少malloc的频率，提高内存申请的效率。
 */
 void
 MemoryContextInit(void)
@@ -101,6 +119,8 @@ MemoryContextInit(void)
 	 * First, initialize TopMemoryContext, which will hold the MemoryContext
 	 * nodes for all other contexts.  (There is special-case code in
 	 * MemoryContextCreate() to handle this call.)
+	 * 
+	 * 创建所有内存上下文的根节点, TopMemoryContext 的 parent 为 NULL
 	 */
 	TopMemoryContext = AllocSetContextCreate((MemoryContext) NULL,
 											 "TopMemoryContext",
@@ -121,15 +141,25 @@ MemoryContextInit(void)
 	 * elsewhere! Also, allow allocations in ErrorContext within a critical
 	 * section. Otherwise a PANIC will cause an assertion failure in the error
 	 * reporting code, before printing out the real cause of the failure.
+	 * 
+	 * 将 ErrorContext 初始化为一个AllocSetContext，并以较慢的速度增长 —— 我们真的不期望
+	 * 在其中分配太多。更重要的是，要求它在任何时候都至少包含8K。这是唯一一种情况，在上下文中
+	 * 保留内存是必要的 —— 我们想要确保 ErrorContext 仍然有一些内存，即使我们在其他地方耗
+	 * 尽了内存! 另外，允许 ErrorContext 在临界区内进行分配。否则，在打印出失败的真正
+	 * 原因之前，PANIC 将导致错误报告代码中的 断言 失败
 	 *
 	 * This should be the last step in this function, as elog.c assumes memory
 	 * management works once ErrorContext is non-null.
+	 * 
+	 * 是 TopMemoryContext 的第一个子节点，是错误恢复处理的永久性内存上下文，恢复完毕
+	 * 就会进行重制
 	 */
 	ErrorContext = AllocSetContextCreate(TopMemoryContext,
 										 "ErrorContext",
 										 8 * 1024,
 										 8 * 1024,
 										 8 * 1024);
+	/* 允许 ErrorContext 在临界区内进行分配 */
 	MemoryContextAllowInCriticalSection(ErrorContext, true);
 }
 
@@ -385,6 +415,8 @@ MemoryContextSetParent(MemoryContext context, MemoryContext new_parent)
  * that, like allocations related to debugging code that is not supposed to
  * be enabled in production.  This function can be used to exempt specific
  * memory contexts from the assertion in palloc().
+ * 通常，不允许在临界区中分配内存，因为失败将导致PANIC。但也有一些例外，比如与调试代码相
+ * 关的分配不应该在生产中启用。这个函数可以用来免除 palloc() 中断言的特定内存上下文。
  */
 void
 MemoryContextAllowInCriticalSection(MemoryContext context, bool allow)
@@ -665,6 +697,7 @@ MemoryContextCreate(NodeTag tag, Size size,
 	Size		needed = size + strlen(name) + 1;
 
 	/* creating new memory contexts is not allowed in a critical section */
+	/* 参考 START_CRIT_SECTION() 宏, 此函数不允许在PG临界区中调用 */
 	Assert(CritSectionCount == 0);
 
 	/* Get space for node and name */
@@ -677,6 +710,7 @@ MemoryContextCreate(NodeTag tag, Size size,
 	else
 	{
 		/* Special case for startup: use good ol' malloc */
+		/* 调用 malloc 构造 TopMemoryContext */
 		node = (MemoryContext) malloc(needed);
 		Assert(node != NULL);
 	}
@@ -698,11 +732,12 @@ MemoryContextCreate(NodeTag tag, Size size,
 
 	/* OK to link node to parent (if any) */
 	/* Could use MemoryContextSetParent here, but doesn't seem worthwhile */
+	/* 对于 TopMemoryContext parent 为 NULL */
 	if (parent)
 	{
 		/* 
-		* 如果父节点不为空，将当前MemoryContext的nextchild指向父节点的第一个子节点
-		* 则将新的MemoryContext作为父节点的第一个子节点
+		* 如果父节点不为空，将当前 MemoryContext 的 nextchild 指向父节点的第一个子节点
+		* 则将新的 MemoryContext 作为父节点的第一个子节点
 		*/
 		node->parent = parent;// 当前节点父节点赋值
 		node->nextchild = parent->firstchild;
@@ -730,7 +765,7 @@ void *
 MemoryContextAlloc(MemoryContext context, Size size)
 {
 	void	   *ret;
-
+	/* 在给定的 MemoryContext 中分配内存 */
 	AssertArg(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
@@ -738,7 +773,7 @@ MemoryContextAlloc(MemoryContext context, Size size)
 		elog(ERROR, "invalid memory alloc request size %zu", size);
 
 	context->isReset = false;
-
+	/* 调用 AllocSetAlloc 分配出内存 */
 	ret = (*context->methods->alloc) (context, size);
 	if (ret == NULL)
 	{
@@ -873,7 +908,7 @@ palloc(Size size)
 {
 	/* duplicates MemoryContextAlloc to avoid increased overhead */
 	void	   *ret;
-
+	/* 在当前的 MemoryContext 中分配内存 */
 	AssertArg(MemoryContextIsValid(CurrentMemoryContext));
 	AssertNotInCriticalSection(CurrentMemoryContext);
 
@@ -881,7 +916,7 @@ palloc(Size size)
 		elog(ERROR, "invalid memory alloc request size %zu", size);
 
 	CurrentMemoryContext->isReset = false;
-
+	/* 调用 AllocSetAlloc 分配出内存 */
 	ret = (*CurrentMemoryContext->methods->alloc) (CurrentMemoryContext, size);
 	if (ret == NULL)
 	{

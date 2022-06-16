@@ -118,6 +118,7 @@ GetMemoryChunkContext(void *pointer)
 
 	/*
 	 * OK, it's probably safe to look at the context.
+	 * sizeof(void *) 获取一个指针的大小
 	 */
 	context = *(MemoryContext *) (((char *) pointer) - sizeof(void *));
 

@@ -28,15 +28,20 @@
  * Note: if you need to change it, you must change pg_class.h as well.
  * ----------------
  */
+/* 表示无效的事务ID */
 #define InvalidTransactionId		((TransactionId) 0)
+/* 表示系统表初始化时的事务ID，比任何普通的事务ID都旧 */
 #define BootstrapTransactionId		((TransactionId) 1)
+/* 冻结的事务ID，比任何普通的事务ID都旧 */
 #define FrozenTransactionId			((TransactionId) 2)
+/* 大于2的事务ID都是普通的事务ID */
 #define FirstNormalTransactionId	((TransactionId) 3)
 #define MaxTransactionId			((TransactionId) 0xFFFFFFFF)
 
 /* ----------------
  *		transaction ID manipulation macros
  * ----------------
+ * txid间可以相互比较大小，任何事务只可见txid ＜ 其自身txid的事务修改结果
  */
 #define TransactionIdIsValid(xid)		((xid) != InvalidTransactionId)
 #define TransactionIdIsNormal(xid)		((xid) >= FirstNormalTransactionId)

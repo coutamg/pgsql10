@@ -50,7 +50,7 @@ typedef struct MemoryContextCounters
  * Note: for largely historical reasons, typedef MemoryContext is a pointer
  * to the context struct rather than the struct type itself.
  */
-
+/* 具体函数参考 AllocSetMethods, 在 AllocSetContextCreate 中被赋值*/
 typedef struct MemoryContextMethods
 {
 	void	   *(*alloc) (MemoryContext context, Size size); // 分配内存
@@ -81,7 +81,7 @@ typedef struct MemoryContextData
 		但这可以用于调试代码，方便开发调试，这些代码不建议进入实际生成环境中。
 	*/
 	bool		allowInCritSection; /* allow palloc in critical section */
-	// 内存处理函数
+	// 内存处理函数, 目前只有 AllocSetContex 一种实现
 	MemoryContextMethods *methods;	/* virtual function table */
 
 	/* parent，prevchild，nextchild组成内存上下文的树形结构，方便在重置或
@@ -103,6 +103,21 @@ typedef struct MemoryContextData
 	*/
 	MemoryContextCallback *reset_cbs;	/* list of reset/delete callbacks */
 } MemoryContextData;
+
+/* 可以参考 https://zhuanlan.zhihu.com/p/350049053
+                   			+------------------+
+				   			| TopMemoryContext |
+				   			+--------+---------+
+		 +---------------------------|-----------------------+------------->...
+		\|/							\|/						\|/
+	+--------------------+     +----------------------+   +--------------+
+	| CacheMemoryContext |     | MessageMemoryContext |   | ErrorContext |
+	+---------+----------+     +----------------------+   +--------------+
+              |
+	+---------+-----------+------>...
+   \|/       \|/         \|/
+ [CacheHDR] [Cache]     [Cache]
+*/
 
 /* utils/palloc.h contains typedef struct MemoryContextData *MemoryContext */
 // 全局变量 AllocSetMethods 中指定了 AllocSetContext 实现的操作函数，在 aset.c 中

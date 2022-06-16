@@ -98,6 +98,7 @@ pid_t		PostmasterPid = 0;
  * These are initialized for the bootstrap/standalone case.
  */
 bool		IsPostmasterEnvironment = false;
+/* fork 子进程的时候调用 InitPostmasterChild 改成 true */
 bool		IsUnderPostmaster = false;
 bool		IsBinaryUpgrade = false;
 bool		IsBackgroundWorker = false;

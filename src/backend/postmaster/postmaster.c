@@ -3204,6 +3204,8 @@ CleanupBackend(int pid,
 	 * to quickdie.  If exit status is zero (normal) or one (FATAL exit), we
 	 * assume everything is all right and proceed to remove the backend from
 	 * the active backend list.
+	 * 
+	 * 非 0 或 1 的 exit code 会导致所有的 backend crash
 	 */
 
 #ifdef WIN32
@@ -4287,6 +4289,7 @@ BackendInitialize(Port *port)
  * returns:
  *		Shouldn't return at all.
  *		If PostgresMain() fails, return status.
+ * BackendStartup -> BackendRun
  */
 static void
 BackendRun(Port *port)
@@ -4354,7 +4357,7 @@ BackendRun(Port *port)
 	 * just yet, though, because InitPostgres will need the HBA data.)
 	 */
 	MemoryContextSwitchTo(TopMemoryContext);
-
+	/* TopMemoryContext 在 postmaster 构建一次，*/
 	PostgresMain(ac, av, port->database_name, port->user_name);
 }
 

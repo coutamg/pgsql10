@@ -64,6 +64,9 @@ int			IdleInTransactionSessionTimeout = 0;
 bool		log_lock_waits = false;
 
 /* Pointer to this process's PGPROC and PGXACT structs, if any */
+/* 对于 backend/single MyProc 会在 InitProcess 中被赋值，来源于 ProcGlobal
+ * Startup 的时候会在 InitAuxiliaryProcess 中被赋值
+ */
 PGPROC	   *MyProc = NULL;
 PGXACT	   *MyPgXact = NULL;
 
@@ -77,6 +80,12 @@ PGXACT	   *MyPgXact = NULL;
 NON_EXEC_STATIC slock_t *ProcStructLock = NULL;
 
 /* Pointers to shared-memory structures */
+/* ProcGlobal 在 InitProcGlobal 被赋值，PostMaster 会初始化 ProcGlobal 的
+ * 共享内存。对于 single/boost 会在  
+ * PostgresMain/AuxiliaryProcessMain -> BaseInit -> InitCommunication 
+ * 的过程中通过调用 CreateSharedMemoryAndSemaphores 来初始化 ProcGlobal 的
+ * 共享内存
+ */
 PROC_HDR   *ProcGlobal = NULL;
 NON_EXEC_STATIC PGPROC *AuxiliaryProcs = NULL;
 PGPROC	   *PreparedXactProcs = NULL;
@@ -157,6 +166,20 @@ ProcGlobalSemas(void)
  * Note: this is NOT called by individual backends under a postmaster,
  * not even in the EXEC_BACKEND case.  The ProcGlobal and AuxiliaryProcs
  * pointers must be propagated specially for EXEC_BACKEND operation.
+ * 
+ * 在 postmaster 或 standalone 进程启动时初始化全局进程表。pg 还创建了支持被
+ * 请求的 backend 进程时每个 backend 进程需要的信号。以前 pg 仅在 backend 进程
+ * 实际启动时分配信号，但是这样不好，因为这样使 postgres 在加载时失败，很多 
+ * unix 系统被配置/错误配置成在信号数目上比较小，在试着开启了一个进程时信号用完了，
+ * 这是常见的故障。
+ * 
+ * 因此，现在pg在初始化时就立即搞出足够的信号数以支持预期的最大 backend进程数。如
+ * 果系统管理员把 MaxBackends 设置的比 kernel 里能够支持的高，他不久会发现。
+ * 
+ * 在这儿创建信号的另一个原因是信号实现特别要求 pg 在 postmaster 中创建信号，
+ * 而不是在 backend 进程里创建。
+ * 详细见 proc_globalinit.png
+ * https://blog.csdn.net/BeiiGang/article/details/7322388
  */
 void
 InitProcGlobal(void)
@@ -209,6 +232,8 @@ InitProcGlobal(void)
 	 * provides significant performance benefits, especially on a
 	 * multiprocessor system.  There is one PGXACT structure for every PGPROC
 	 * structure.
+	 * 
+	 * 分配了最多能用完的PGPROC和信号、锁等并初始化
 	 */
 	pgxacts = (PGXACT *) ShmemAlloc(TotalProcs * sizeof(PGXACT));
 	MemSet(pgxacts, 0, TotalProcs * sizeof(PGXACT));
@@ -222,6 +247,12 @@ InitProcGlobal(void)
 		 * Set up per-PGPROC semaphore, latch, and backendLock. Prepared xact
 		 * dummy PGPROCs don't need these though - they're never associated
 		 * with a real process
+		 * 
+		 * 结构 PGPROC 有个 PGSemaphoreData 类型的成员，PGSemaphoreData 类型和其指针
+		 * 类型 PGSemaphore 是表示私有信号的数据结构。在各平台上 PGSemaphoreData 的实现
+		 * 是不同的，PGSemaphoreData 结构总是被分配在共享内存中（以支持实现在加锁/解锁期间数
+		 * 据变化）。这个 PGSemaphoreData 类型的成员 sem 是通过调用 PGSemaphoreCreate()
+		 * 函数为每一个 PGPROC 结构的 sem 成员初始化信号所用内存。信号在各操作系统中是不同的
 		 */
 		if (i < MaxBackends + NUM_AUXILIARY_PROCS)
 		{
@@ -355,6 +386,7 @@ InitProcess(void)
 	 * child; this is so that the postmaster can detect it if we exit without
 	 * cleaning up.  (XXX autovac launcher currently doesn't participate in
 	 * this; it probably should.)
+	 * PMChildFlags 标记为 active
 	 */
 	if (IsUnderPostmaster && !IsAutoVacuumLauncherProcess())
 		MarkPostmasterChildActive();

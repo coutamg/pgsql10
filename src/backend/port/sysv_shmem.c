@@ -237,6 +237,8 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	 * Store shmem key and ID in data directory lockfile.  Format to try to
 	 * keep it the same length always (trailing junk in the lockfile won't
 	 * hurt, but might confuse humans).
+	 * 
+	 * 把IPC key和shmid记录到postmaster.pid文件
 	 */
 	{
 		char		line[64];
@@ -553,6 +555,18 @@ AnonymousShmemDetach(int status, Datum arg)
  * The port number is passed for possible use as a key (for SysV, we use
  * it to generate the starting shmem key).  In a standalone backend,
  * zero will be passed.
+ * 
+ * PGSharedMemoryCreate() 分配内存是先根据 postmaster 进程端口号计算找一个空闲 IPC key
+ * 的起始值。接着调用 InternalIpcMemoryCreate() 函数，尝试根据给定 IPC key 调用 shmget()
+ * 函数创建共享内存段。如果给定 key 的内存段已经存在就失败返回 NULL。如果成功，把该内存段
+ * attach 到当前进程 postmaster 并返回该内存段地址。调用 on_shmem_exit() 函数注册 detach
+ * 和 delete 该段内存时的回调函数 IpcMemoryDelete() 和 IpcMemoryDetach() 到
+ * on_shmem_exit_list 数组。
+ * 
+ * on_shmem_exit() 函数注册函数到以 ONEXIT 结构为元素的数组
+ * on_shmem_exit_list[MAX_ON_EXITS]中以供shmem_exit()函数执行时调用
+ * 
+ * 参考 https://blog.csdn.net/BeiiGang/article/details/7163465
  */
 PGShmemHeader *
 PGSharedMemoryCreate(Size size, bool makePrivate, int port,
@@ -577,6 +591,7 @@ PGSharedMemoryCreate(Size size, bool makePrivate, int port,
 	Assert(size > MAXALIGN(sizeof(PGShmemHeader)));
 
 #ifdef USE_ANONYMOUS_SHMEM
+	/* 参考 https://blog.csdn.net/asmartkiller/article/details/118656910 */
 	AnonymousShmem = CreateAnonymousSegment(&size);
 	AnonymousShmemSize = size;
 
@@ -655,6 +670,7 @@ PGSharedMemoryCreate(Size size, bool makePrivate, int port,
 	 * OK, we created a new segment.  Mark it as created by this process. The
 	 * order of assignments here is critical so that another Postgres process
 	 * can't see the header as valid but belonging to an invalid PID!
+	 * 分配到的共享内存的头部放一个 PGShmemHeader 结构实例并初始化其成员
 	 */
 	hdr = (PGShmemHeader *) memAddress;
 	hdr->creatorPID = getpid();

@@ -4801,6 +4801,7 @@ check_wal_buffers(int *newval, void **extra, GucSource source)
 
 /*
  * Initialization of shared memory for XLOG
+ * 参考 https://blog.csdn.net/BeiiGang/article/details/7185773
  */
 Size
 XLOGShmemSize(void)
@@ -4869,6 +4870,10 @@ XLOGShmemInit(void)
 
 	ControlFile = (ControlFileData *)
 		ShmemInitStruct("Control File", sizeof(ControlFileData), &foundCFile);
+	/* ShmemInitStruct 调用 hash_search() 在哈希表索引 "ShmemIndex" 中查找 "XLOGCtl"，
+	 * 如果没有，就在 shmemIndex 中给 "XLOG Ctl" 分一个 HashElement 和 ShmemIndexEnt(entry)，
+	 * 在其中的 Entry 中写上 "XLOG Ctl"
+	 */
 	XLogCtl = (XLogCtlData *)
 		ShmemInitStruct("XLOG Ctl", XLOGShmemSize(), &foundXLog);
 
@@ -4932,6 +4937,7 @@ XLOGShmemInit(void)
 	SpinLockInit(&XLogCtl->Insert.insertpos_lck);
 	SpinLockInit(&XLogCtl->info_lck);
 	SpinLockInit(&XLogCtl->ulsn_lck);
+	/* recovery latch 的共享内存 */
 	InitSharedLatch(&XLogCtl->recoveryWakeupLatch);
 
 	/*

@@ -22,7 +22,10 @@
  * hasn't committed or aborted yet.
  */
 typedef int XidStatus;
-
+/* 四种状态的事务
+ * 四种事务状态仅需两个bit即可记录。以一个块8KB为例，可以存储8KB*8/2 = 32K个事务的状态。
+ * 内存中缓存CLOG的buffer 大小为Min(128,Max(4,NBuffers/512))
+*/
 #define TRANSACTION_STATUS_IN_PROGRESS		0x00
 #define TRANSACTION_STATUS_COMMITTED		0x01
 #define TRANSACTION_STATUS_ABORTED			0x02

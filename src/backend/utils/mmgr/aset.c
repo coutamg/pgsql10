@@ -137,7 +137,9 @@ typedef struct AllocSetContext
 	// 分配内存片的尺寸阈值，在分配内存块是用到,该值有效时，是为了运行是替换 ALLOC_CHUNK_LIMIT 这个宏
 	// 申请的内存超过此阀值直接分配新的block
 	Size		allocChunkLimit;	/* effective chunk size limit */
-	// keeper 中的内存块在内存上下文重置时保留不被释放
+	/* keeper 中的内存块在内存上下文重置时保留不被释放, 为防止一些需要频繁重置的小的内存
+	 * 上下文重复的进行malloc，重置时保留第一次申请的内存块 
+	 */
 	AllocBlock	keeper;			/* if not NULL, keep this block over resets */
 } AllocSetContext;
 
@@ -379,6 +381,9 @@ AllocSetContextCreate(MemoryContext parent,
 			 minContextSize);
 
 	/* Do the type-independent part of context creation */
+	/* TopMemoryContext 不为空的时候，从 TopMemoryContext 分配，
+	 * 如果没有 TopMemoryContext 则调用 malloc 构造 TopMemoryContext
+	 */
 	set = (AllocSet) MemoryContextCreate(T_AllocSetContext,
 										 sizeof(AllocSetContext),
 										 &AllocSetMethods,

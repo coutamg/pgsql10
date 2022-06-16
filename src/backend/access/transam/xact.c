@@ -119,14 +119,30 @@ int			MyXactFlags;
 
 /*
  *	transaction states - transaction state from server perspective
+ * 事务的状态，底层事务真正的状态
  */
 typedef enum TransState
 {
+	/* 没有事务运行时的状态 */
 	TRANS_DEFAULT,				/* idle */
+	/* 事务开始时的状态，当进入底层函数 StartTransaction 或 StartSubTransaction 时
+	 * 事务的状态由 TRANS_DEFAULT 转换为 TRANS_START
+	 */
 	TRANS_START,				/* transaction starting */
+	/* 如果底层函数 StartTransaction 或 StartSubTransaction 正常执行，则在函数结束
+	 * 时，事务的状态由 TRANS_START 切换为 TRANS_INPROGRESS, 这是事务运行过程中的状态
+	 */
 	TRANS_INPROGRESS,			/* inside a valid transaction */
+	/* 事务提交时，会进入底层事务函数 CommitTransaction 或 CommitSubTransaction 清理
+	 * 资源，当这些函数退出时，事务的状态被切换为 TRANS_DEFAULT, 事务彻底结束
+	 */
 	TRANS_COMMIT,				/* commit in progress */
+	/* 在事务回滚时需要清理资源，会进入底层函数 AbortTransaction 和 
+	 * AbortSubTransaction, 然后事务进入 TRANS_ABORT 状态，资源清理完毕后，事务彻底
+	 * 结束，会从 TRANS_ABORT 进入 TRANS_DEFAULT
+	 */
 	TRANS_ABORT,				/* abort in progress */
+	/* 进入两阶段提交时的事务状态 */
 	TRANS_PREPARE				/* prepare in progress */
 } TransState;
 
@@ -135,34 +151,86 @@ typedef enum TransState
  *
  * Note: the subtransaction states are used only for non-topmost
  * transactions; the others appear only in the topmost transaction.
+ * 事务块中的状态，即显示事务，显示用 BEGIN 开启事务
  */
 typedef enum TBlockState
 {
-	/* not-in-transaction-block states */
+	/* not-in-transaction-block states 不在事务块中的状态 */
+	/* 事务块的默认状态，事务开始之前或者结束之后都是这个状态 */
 	TBLOCK_DEFAULT,				/* idle */
+	/* 当开始进入事务块时，如果事务块处于 TBLOCK_DEFAULT 那么就可以把事务块
+	 * 的状态修改为 TBLOCK_STARTED，该状态只会存在很短的时间，在显示事务中
+	 * 很快就会变成 TBLOCK_BEGIN, 对于隐式事务(不在事务块中的事务), 会处于该状态
+	 */
 	TBLOCK_STARTED,				/* running single-query transaction */
 
-	/* transaction block states */
+	/* transaction block states 处于事务块中的状态 */
+	/* 事务 BEGIN 时设置的状态，TBLOCK_BEGIN 的状态存在的时间很短，当 BEGIN
+	 * 命令执行完毕后，事务块就会进入 TBLOCK_INPROGRESS
+	 */
 	TBLOCK_BEGIN,				/* starting transaction block */
+	/* 事务块正在处理当中，事务块的执行过程会一直处理这个状态，直到事务提交/回滚/异常
+	 * 终止才会改变
+	 */
 	TBLOCK_INPROGRESS,			/* live transaction */
+
+	/* 与 TBLOCK_INPROGRESS 类似，用在并行事务中 */
 	TBLOCK_PARALLEL_INPROGRESS, /* live transaction inside parallel worker */
+	/* 事务提交时，状态被置于 TBLOCK_END */
 	TBLOCK_END,					/* COMMIT received */
+	/* 一个事务块中有很多 sql，如果有 sql 语句产生了错误，则该事务块需要终止，后面的 sql
+	 * 就不需要执行了，这时事务块被切换到 TBLOCK_ABORT 状态
+	 */
 	TBLOCK_ABORT,				/* failed xact, awaiting ROLLBACK */
+	/* 即使事务进入了 ABORT 状态，用户仍然能继续输入 sql 命令，只不过这些命令不会成功
+	 * 提示事务需要终止。当用户按照这个提示信息显示结束事务时，事务块会进入 TBLOCK_ABORT_END
+	 */
 	TBLOCK_ABORT_END,			/* failed xact, ROLLBACK received */
+	/* 假如事务块一直运行正常，那么就会一直处于 TBLOCK_INPROGRESS 。如果用户显示输入了
+	 * 回滚命令，则事务块就会从 TBLOCK_INPROGRESS 状态切换到 TBLOCK_ABORT_PENDING 状态
+	 */
 	TBLOCK_ABORT_PENDING,		/* live xact, ROLLBACK received */
+	/* 为了支持两阶段提交(Two-Phase commit) 而支持了 PREPARE TRANSACTION 命令。执行这条
+	 * 命令后，事务块会进入 TBLOCK_PREPARE 状态
+	 */
 	TBLOCK_PREPARE,				/* live xact, PREPARE received */
 
-	/* subtransaction states */
+	/* subtransaction states 子事务对应的状态 */
+	/* SAVEPOINT 开始时的状态，该状态持续的时间很短，事务块很快会从该状态切换到
+	 * TBLOCK_SUBINPROGRESS
+	 */
 	TBLOCK_SUBBEGIN,			/* starting a subtransaction */
+	/* 子事务正常运行的状态，与 TBLOCK_INPROGRESS 类似 */
 	TBLOCK_SUBINPROGRESS,		/* live subtransaction */
+	/* 当执行 RELEASE SAVEPOINT 时，目标 SAVEPOINT 之后的子事务块被置为
+	 * TBLOCK_SUBRELEASE
+	 */
 	TBLOCK_SUBRELEASE,			/* RELEASE received */
+	/* 子事务提交时，所有 SAVEPOINT 对应的事务块会被置成 TBLOCK_SUBCOMMIT */
 	TBLOCK_SUBCOMMIT,			/* COMMIT received while TBLOCK_SUBINPROGRESS */
+	/* SAVEPOINT 中出现 Error，那么当前 SAVEPOINT 的事务块被置为该状态 */
 	TBLOCK_SUBABORT,			/* failed subxact, awaiting ROLLBACK */
+	/* 当事务块执行 ROLLBACK, RELEASE SAVEPOINT, ROLLBACK TO SAVEPOINT 时
+	 * 将出现 Error 的 SAVEPOINT 置为此状态
+	 */
 	TBLOCK_SUBABORT_END,		/* failed subxact, ROLLBACK received */
+	/* 执行 ROLLBACK TO SAVEPOINT 时, 会将要回滚的子事务的事务块设置为
+	 * TBLOCK_SUBABORT_PENDING
+	 */
 	TBLOCK_SUBABORT_PENDING,	/* live subxact, ROLLBACK received */
+	/* 执行 ROLLBACK TO SAVEPOINT 时, 会将目标子事务的事务块设置为
+	 * TBLOCK_SUBRESTART
+	 */
 	TBLOCK_SUBRESTART,			/* live subxact, ROLLBACK TO received */
+	/* 出现 Error 的 SAVEPOINT, 可以通过 ROLLBACK TO SAVEPOINT 的方式重启 */
 	TBLOCK_SUBABORT_RESTART		/* failed subxact, ROLLBACK TO received */
 } TBlockState;
+/*
+  每个 SAVEPOINT 都是一个单独的子事务块，在 PostgreSQL 中用“栈”保存每个 SAVEPOINT
+  （子事务）的状态，因此，可以想象这些 SAVEPOINT 之间存在先后（父子）关系。当执行
+  ROLLBACK TO SAVEPOINT 恢复到某一个 SAVEPOINT 时，栈顶到这个目标 SAVEPOINT 之间
+  的 SAVEPOINT 就会被丢弃
+*/
 
 /*
  *	transaction state structure
@@ -172,22 +240,37 @@ typedef struct TransactionStateData
 	TransactionId transactionId;	/* my XID, or Invalid if none */
 	SubTransactionId subTransactionId;	/* my subxact ID */
 	char	   *name;			/* savepoint name, if any */
+	/* 当前是第几层 SAVEPOINT, SAVEPOINT 可以嵌套 */
 	int			savepointLevel; /* savepoint level */
+	/* 底层事务的状态 */
 	TransState	state;			/* low-level state */
+	/* 上层事务的状态, 事务块的状态 */
 	TBlockState blockState;		/* high-level state */
+	/* 事务嵌套深度 */
 	int			nestingLevel;	/* transaction nesting depth */
+	/* GUC（Grand Unified Configuration，全局统一配置） 上下文嵌套深度，
+	 * 与子事务出入栈相关 
+	 */
 	int			gucNestLevel;	/* GUC context nesting depth */
+	/* 事务当前上下文 */
 	MemoryContext curTransactionContext;	/* my xact-lifetime context */
+	/* 当前事务占有的资源 */
 	ResourceOwner curTransactionOwner;	/* my query resources */
+	/* 提交的子事务链表 */
 	TransactionId *childXids;	/* subcommitted child XIDs, in XID order */
+	/* 提交的子事务个数 */
 	int			nChildXids;		/* # of subcommitted child XIDs */
+	/* 已分配的子事务 childXids[] 存储空间 */
 	int			maxChildXids;	/* allocated size of childXids[] */
+	/* 记录前一个 CurrentUserId（用户名） 设置 */
 	Oid			prevUser;		/* previous CurrentUserId setting */
 	int			prevSecContext; /* previous SecurityRestrictionContext */
+	/* 只读事务 */
 	bool		prevXactReadOnly;	/* entry-time xact r/o state */
 	bool		startedInRecovery;	/* did we start in recovery? */
 	bool		didLogXid;		/* has xid been included in WAL record? */
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
+	/* 指向上层事务的指针 */
 	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
@@ -291,7 +374,23 @@ typedef struct SubXactCallbackItem
 } SubXactCallbackItem;
 
 static SubXactCallbackItem *SubXact_callbacks = NULL;
+/*
+ • 上层：处理显式的事务块命令，例如BEGIN、COMMIT、ROLLBACK等，事务的上层实现包含如下函数。
+ 	BeginTransactionBlock, EndTransactionBlock, UserAbortTransactionBlock, 
+	DefineSavepoin, RollbackToSavepoint, ReleaseSavepoint
 
+ • 中层：无论是事务块命令，还是事务块中间的DML、DDL命令，对于事务来说，每一条都是一个查询，每个
+        查询的执行都会借助中层的事务处理机制来完成。事务的中层实现包含如下函数。
+     StartTransactionCommand, CommitTransactionCommand, AbortTransactionCommand。
+
+• 底层：真正的事务处理机制，负责维护事务的状态、事务资源的分配与回收等。事务的底层实现包含如下函数。
+   StartTransaction, CommitTransaction, AbortTransaction, CleanupTransactiono, 
+   StartSubTransaction, CommitSubTransaction, AbortSubTransaction, 
+   CleanupSubTransaction
+
+事务块的状态是通过上层函数和中层函数同时控制的，而底层函数则主要控制事务的状态（事务块的状态和事务的状态
+是不同的
+*/
 
 /* local function prototypes */
 static void AssignTransactionId(TransactionState s);
@@ -345,6 +444,12 @@ static const char *TransStateAsString(TransState state);
  *
  *	This returns true if we are inside a valid transaction; that is,
  *	it is safe to initiate database access, take heavyweight locks, etc.
+ * 隐式事务和显式事务的区别就是它的事务块状态中没有 TBLOCK_INPROGRESS 状态，全程都
+ * 处于 TBLOCK_STARTED 状态.
+ * 隐式事务通常会涉及中层函数和底层函数。以 INSERT 语句为例，隐式事务也会调用会中层的
+ * StartTransactionCommand 函数，它会将事务块状态由 TBLOCK_DEFAULT 切换为
+ * TBLOCK_STARTED，然后正式执行 SQL 语句（而显式事务会由上层函数继续切换事务块状态），
+ * 所以，PostgreSQL 可以用事务块状态来区分当前 SQL 是隐式事务还是显式事务
  */
 bool
 IsTransactionState(void)
@@ -484,10 +589,23 @@ GetStableLatestTransactionId(void)
  * Also, any parent TransactionStates that don't yet have XIDs are assigned
  * one; this maintains the invariant that a child transaction has an XID
  * following its parent's.
+ * 
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124634566
+ * 如果有子事务，要给顶层事务和子事务都分配事务ID，并且顶层事务ID一定小于子事务ID（层数越
+ * 深id号越大）
+ * 
+ * 分配事务ID函数 AssignTransactionId() -> GetNewTransactionId()
+ * 
+ * 最先进入 AssignTransactionId() 函数的参数是最底层事务
+ *  这个函数最主要的部分是构造一个 parents 数组，按照 子事务->父事务 的顺序填充该数组，
+ *  再按照 父事务->子事务 的顺序递归调用 AssignTransactionId() 函数
+ * 
+ *  AssignTransactionId() 函数会再继续调用 GetNewTransactionId() 函数分配事务ID
  */
 static void
 AssignTransactionId(TransactionState s)
 {
+	/* 如果是顶层事务的话 s-parent = NULL */
 	bool		isSubXact = (s->parent != NULL);
 	ResourceOwner currentOwner;
 	bool		log_unknown_top = false;
@@ -508,6 +626,15 @@ AssignTransactionId(TransactionState s)
 	 * than its parent.  Musn't recurse here, or we might get a stack overflow
 	 * if we're at the bottom of a huge stack of subtransactions none of which
 	 * have XIDs yet.
+	 * 
+	 * 如果时子事务，则需要给父事务也分配事务 ID, 这里不用递归的方法向上检查，避免栈溢出，
+	 * 而是根据 nsetingLevel 计算上层有多少层，按照层数分配指针数组，然后通过循环为数组
+	 * 中的每一个子事务分配事务 ID, 注意分配事务 ID 的顺序，先为父事务分配，后为当前层
+	 * 事务分配
+	 * 
+	 * 如果是子事务（函数最开始部分对 isSubXact 的定义是 isSubXact = (s->parent != 
+	 * NULL);），并且其父事务未分配事务 id ：做一些数据初始化，其中比较重要的是将 p指向s
+	 * 的父事务，并根据 s->nestingLevel（子事务深度）构造 parents 数组。
 	 */
 	if (isSubXact && !TransactionIdIsValid(s->parent->transactionId))
 	{
@@ -516,6 +643,15 @@ AssignTransactionId(TransactionState s)
 		size_t		parentOffset = 0;
 
 		parents = palloc(sizeof(TransactionState) * s->nestingLevel);
+		/* 从最底层事务向最顶层事务构造 parents 数组 
+		    +---------+
+			| 顶层事务 |      parents[2]
+			+---------+
+			| 事务p1  |		 parents[1]
+			+--------+
+			| 事务p2 ｜ 	  parents[0]
+			+--------+
+		 */
 		while (p != NULL && !TransactionIdIsValid(p->transactionId))
 		{
 			parents[parentOffset++] = p;
@@ -525,6 +661,10 @@ AssignTransactionId(TransactionState s)
 		/*
 		 * This is technically a recursive call, but the recursion will never
 		 * be more than one layer deep.
+		 * 
+		 * 父事务->子事务的顺序递归调用AssignTransactionId()函数。通过这种方式，保证了
+		 * 父事务 id 一定先于子事务 id 分配（父事务id一定比子事务id小）。各层都递归执行完
+		 * 后，通过 pfree 释放 parents 数组占用资源
 		 */
 		while (parentOffset != 0)
 			AssignTransactionId(parents[--parentOffset]);
@@ -553,6 +693,9 @@ AssignTransactionId(TransactionState s)
 	 * shared storage other than PG_PROC; because if there's no room for it in
 	 * PG_PROC, the subtrans entry is needed to ensure that other backends see
 	 * the Xid as "running".  See GetNewTransactionId.
+	 * 
+	 * 分配事务ID的工作在GetNewTransactionId函数中完成，事务ID的计数器保存在共享内存
+	 * 的VariableCacheData结构体中，每次获得事务ID之后都要对计数器做+1操作
 	 */
 	s->transactionId = GetNewTransactionId(isSubXact);
 	if (!isSubXact)
@@ -1283,14 +1426,17 @@ RecordTransactionCommit(void)
 	 * if all to-be-deleted tables are temporary though, since they are lost
 	 * anyway if we crash.)
 	 */
+	/* 需要将事务日志刷入磁盘，然后事务才能提交 */
 	if ((wrote_xlog && markXidCommitted &&
 		 synchronous_commit > SYNCHRONOUS_COMMIT_OFF) ||
 		forceSyncCommit || nrels > 0)
 	{
+		/* 刷事务日志到磁盘 */
 		XLogFlush(XactLastRecEnd);
 
 		/*
 		 * Now we may update the CLOG, if we wrote a COMMIT record above
+		 * 更新事务的状态
 		 */
 		if (markXidCommitted)
 			TransactionIdCommitTree(xid, nchildren, children);
@@ -1307,6 +1453,7 @@ RecordTransactionCommit(void)
 		 *
 		 * Report the latest async commit LSN, so that the WAL writer knows to
 		 * flush this commit.
+		 * 设置异步提交的最新的 LSN
 		 */
 		XLogSetAsyncXactLSN(XactLastRecEnd);
 
@@ -1314,6 +1461,8 @@ RecordTransactionCommit(void)
 		 * We must not immediately update the CLOG, since we didn't flush the
 		 * XLOG. Instead, we store the LSN up to which the XLOG must be
 		 * flushed before the CLOG may be updated.
+		 * 将最新的 LSN 保存到异步提交的事务组中，不用等事务日志刷入磁盘即可提交事务，
+		 * 同时将事务的状态保存到 clog 中
 		 */
 		if (markXidCommitted)
 			TransactionIdAsyncCommitTree(xid, nchildren, children, XactLastRecEnd);
@@ -1793,6 +1942,8 @@ AtSubCleanup_Memory(void)
 /* ----------------------------------------------------------------
  *						interface routines
  * ----------------------------------------------------------------
+ * 底层：真正的事务处理机制，负责维护事务的状态、事务资源的分配与回收等
+ * 函数：StartTransaction，
  */
 
 /*
@@ -1865,19 +2016,30 @@ StartTransaction(void)
 
 	/*
 	 * must initialize resource-management stuff first
+	 * 初始化了两个 MemoryContext, 一个是 abort 事务用的，
+	 * 另外一个是 Top 事务用的
 	 */
 	AtStart_Memory();
+	/* 
+	 * ResourceOwner 里面保存的有 buffer 信息，锁信息等，这些信息是 Query
+	 * 级别的，每个事务都有自己的 ResourceOwner，子事务也有自己的 ResourceOwner
+	 */
 	AtStart_ResourceOwner();
 
 	/*
 	 * Assign a new LocalTransactionId, and combine it with the backendId to
 	 * form a virtual transaction id.
+	 * 
+	 * 并不是每个事务都分配实际的事务 ID，因为事务 ID 资源宝贵，对于读事务，它主要
+	 * 使用虚拟事务 ID，虚拟事务 ID 由两部分组成：backendID + 本地事务 ID(每个 backend
+	 * 自己维护一个本地事务 ID 计数器)
 	 */
 	vxid.backendId = MyBackendId;
 	vxid.localTransactionId = GetNextLocalTransactionId();
 
 	/*
 	 * Lock the virtual transaction id before we announce it in the proc array
+	 * 只把本地事务 ID 保存到 PGPROC 中
 	 */
 	VirtualXactLockTableInsert(vxid);
 
@@ -1916,14 +2078,19 @@ StartTransaction(void)
 
 	/*
 	 * initialize other subsystems for new transaction
+	 * 记录 GUC 参数的值，比如在子事务中(例如 SAVEPOINT)，多个事务对同一个 GUC 参数设置了不同
+	 * 的值，需要记录这个修改历史，在 ROLLBACK TO SAVEPOINT 的时候进行恢复
 	 */
 	AtStart_GUC();
+	/* 失效消息机制 */
 	AtStart_Cache();
+	/* 触发器相关 */
 	AfterTriggerBeginXact();
 
 	/*
 	 * done with start processing, set current transaction state to "in
 	 * progress"
+	 * 启动事务相关工作结束，事务进入 “进行中” 状态
 	 */
 	s->state = TRANS_INPROGRESS;
 
@@ -2676,6 +2843,8 @@ CleanupTransaction(void)
 
 /*
  *	StartTransactionCommand
+ * 每执行一条 sql 语句都会调用，事务执行结束都会调用
+ * CommitTransactionCommand/AbortCurrentTransaction 命令
  */
 void
 StartTransactionCommand(void)
@@ -2780,6 +2949,7 @@ CommitTransactionCommand(void)
 			 * to the "transaction block in progress" state and return.  (We
 			 * assume the BEGIN did nothing to the database, so we need no
 			 * CommandCounterIncrement.)
+			 * 事务块的状态在这里被改变成 TBLOCK_INPROGRESS
 			 */
 		case TBLOCK_BEGIN:
 			s->blockState = TBLOCK_INPROGRESS;
@@ -3409,11 +3579,20 @@ CallSubXactCallbacks(SubXactEvent event,
 /* ----------------------------------------------------------------
  *					   transaction block support
  * ----------------------------------------------------------------
+ * 上层：处理显式的事务块命令，例如BEGIN、COMMIT、ROLLBACK等
  */
 
 /*
  *	BeginTransactionBlock
  *		This executes a BEGIN command.
+ *
+ * BEGIN命令的函数调用关系
+ *  +- StartTransactionCommand
+ *  |    StartTransaction
+ *  +- ProcessUtility
+ *  |    BeginTransactionBlock
+ *  +- CommitTransactionCommand
+ * \|/
  */
 void
 BeginTransactionBlock(void)
@@ -3424,6 +3603,8 @@ BeginTransactionBlock(void)
 	{
 			/*
 			 * We are not inside a transaction block, so allow one to begin.
+			 * blockState = TBLOCK_STARTED只会存在很短的时间，因为函数的下一步立刻
+			 * 就是改状态为 TBLOCK_BEGIN
 			 */
 		case TBLOCK_STARTED:
 			s->blockState = TBLOCK_BEGIN;

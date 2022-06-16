@@ -115,12 +115,20 @@
 
 typedef struct HeapTupleFields
 {
+	/* 保存插入该元组的事务txid（该元组由哪个事务插入） */
 	TransactionId t_xmin;		/* inserting xact ID */
+	/* 保存更新或删除该元组的事务 txid。若该元组尚未被删除或更新，
+	   则 t_xmax=0，即 invalid 
+	*/
 	TransactionId t_xmax;		/* deleting or locking xact ID */
 
 	union
 	{
+		/* 保存命令标识（command id,cid），指在该事务中，执行当前命令之前还执行
+		 * 过几条sql命令（从0开始计算）
+		*/
 		CommandId	t_cid;		/* inserting or deleting command ID, or both */
+		/* XID for VACUUM operation moving a row version */
 		TransactionId t_xvac;	/* old-style VACUUM FULL xact ID */
 	}			t_field3;
 } HeapTupleFields;
@@ -174,6 +182,7 @@ struct HeapTupleHeaderData
 
 	/* 用于标识元组当前的状态，比如元组是否具有OID、是否有空属性等，t_infomask的每一位对应不同
 	   的状态，共16种状态
+	   HEAP_XMIN_FROZEN: 元组已经被冻结过(frozen)
 	*/
 	uint16		t_infomask;		/* various flag bits, see below */
 
@@ -182,6 +191,18 @@ struct HeapTupleHeaderData
 
 	/* ^ - 23 bytes - ^ */
 	// 数组用于标识该元组哪些字段为空
+	/*
+	 * 当查询一条数据的时候，需要去判断行的可见性，需要去查询相应事务的提交状态。元组中的 Hint Bits
+	 * 采用延迟更新策略，并不会在事务提交或者回滚时主动更新所有操作过的元组Hint Bits。
+	 * 
+	 *	等到第一次访问（可能是VACUUM，DML或SELECT）该元组并进行可见性判断时：
+	 *  如果 Hint Bits 已设置，直接读取 Hint Bits 的值。
+	 *  如果 Hint Bits 未设置，则调用函数从 CLOG 中读取事务状态。如果事务状态为 COMMITTED 或 ABORTED，
+	 *   则将 Hint Bits 设置到元组的 t_informask 字段。如果事务状态为 INPROCESS，由于其状态还未到
+	 *   达终态，无需设置 Hint Bits
+	 * Hint Bits可以理解为是事务状态在元组头上的一份缓存，减少访问链路的长度，让事务状态触手可及
+	 * 参考 https://blog.csdn.net/Hehuyi_In/article/details/102920988
+	*/
 	bits8		t_bits[FLEXIBLE_ARRAY_MEMBER];	/* bitmap of NULLs */
 
 	/* MORE DATA FOLLOWS AT END OF STRUCT */
@@ -210,7 +231,7 @@ struct HeapTupleHeaderData
 						 HEAP_XMAX_KEYSHR_LOCK)
 #define HEAP_XMIN_COMMITTED		0x0100	/* t_xmin committed */
 #define HEAP_XMIN_INVALID		0x0200	/* t_xmin invalid/aborted */
-#define HEAP_XMIN_FROZEN		(HEAP_XMIN_COMMITTED|HEAP_XMIN_INVALID)
+#define HEAP_XMIN_FROZEN		(HEAP_XMIN_COMMITTED|HEAP_XMIN_INVALID) /* 元组 frozen */
 #define HEAP_XMAX_COMMITTED		0x0400	/* t_xmax committed */
 #define HEAP_XMAX_INVALID		0x0800	/* t_xmax invalid/aborted */
 #define HEAP_XMAX_IS_MULTI		0x1000	/* t_xmax is a MultiXactId */

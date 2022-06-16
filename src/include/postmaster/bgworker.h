@@ -85,16 +85,25 @@ typedef enum
 #define BGW_MAXLEN						64
 #define BGW_EXTRALEN					128
 
+/* 参考 https://blog.csdn.net/asmartkiller/article/details/119654183 */
 typedef struct BackgroundWorker
 {
+	/* 进程名 */
 	char		bgw_name[BGW_MAXLEN];
+	/* 后台进程标记 */
 	int			bgw_flags;
+	/* 后台进程开始时间 */
 	BgWorkerStartTime bgw_start_time;
+	/* 后台进程重启延时 */
 	int			bgw_restart_time;	/* in seconds, or BGW_NEVER_RESTART */
+	/* 后台进程库名 */
 	char		bgw_library_name[BGW_MAXLEN];
+	/* 后台进程函数名 */
 	char		bgw_function_name[BGW_MAXLEN];
+	/* 后台进程参数 */
 	Datum		bgw_main_arg;
 	char		bgw_extra[BGW_EXTRALEN];
+	/* 后台进程在启动/停止时需要通知的进程的pid */
 	pid_t		bgw_notify_pid; /* SIGUSR1 this backend on start/stop */
 } BackgroundWorker;
 

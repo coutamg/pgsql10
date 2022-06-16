@@ -195,6 +195,16 @@ extern int	getinternalerrposition(void);
  * Note that historically elog() has called elog_start (which saves errno)
  * before evaluating "elevel", so we preserve that behavior here.
  */
+/* 首先是判断下是否支持__builtin_constant_p,这是编译器gcc内置函数，
+	用于判断一个值是否为编译时常量，如果是常数，函数返回1 ，否则返回0。
+	如果为常量，可以在代码中做一些优化来减少表达式的复杂度
+
+	elog处理日志打印，它通常会调用 write_log写日志
+
+	elog_finish最后会调用errfinish(0)，对后者的描述如下：
+	   errfinish 结束错误报告循环，它会产生合适的错误报告并对错误栈执行pop操作
+	   如果错误等级为ERROR或更严重级别,它将不会返回到调用方。
+*/
 #ifdef HAVE__BUILTIN_CONSTANT_P
 #define elog(elevel, ...)  \
 	do { \

@@ -54,8 +54,51 @@
 
 /*
  * GUC parameters
+ * freeze 参考 https://blog.csdn.net/Hehuyi_In/article/details/102869893
  */
+/* 
+ * 每个元组距离上次freeze操作后多久（多少txid）需要重新freeze 
+ *  每次表被 freeze 之后，会更新 pg_class.relfrozenxid 列为本次 freeze
+ *  的 txid。该列保存对应表最近冻结的 txid，意味着小于此值的 txid 均已被冻结
+ * 
+ *  表年龄就是当前最新的 txid 与 relfrozenxid 的差值，而元组年龄可以理解为每个元组
+ *  的 t_xmin 与 relfrozenxid 的差值。当元组年龄超过 vacuum_freeze_min_age 
+ *  后需要进行 freeze
+ * 
+ *  增大该参数可以避免一些无用的 freeze 操作，减小该参数可以使得在表必须被强制清理之
+ *  前保留更多的 XID 空间。该参数最大值为20亿，最小值为2亿
+ * 参考 vacuum-lazy.png
+*/
 int			vacuum_freeze_min_age;
+/*
+ * 在 freeze 过程中，需要对所有可见且未被 all-frozen 的数据页进行扫描，这个扫描过程
+ * 称为 aggressive vacuum（声势浩大的vacuum）。每次 vacuum 都去扫描每个表所有符合
+ * 条件的数据页显然是不现实的，而 vacuum_freeze_table_age 就用来决定 
+ * aggressive vacuum 的周期
+ *   vacuum_freeze_table_age 表示表的年龄大于该值时，会进行 aggressive vacuum。
+ *   该参数最大值为20亿，最小值为1.5亿。如果为0，则每次扫描表都进行 aggressive vacuum
+ *  
+ *   如果当前db中所有表都进行了冻结，pg会更新 pg_database.datfrozenxid 列，该列包含
+ *   对应db中最小的pg_class.relfrozenxid
+ * 
+ * vacuum_freeze_table_age 决定要不要进行 aggressive vacuum（而不决定要不要冻结元组）；
+ *  当表的年龄超过 vacuum_freeze_table_age 则会 aggressive vacuum
+ * 
+ * vacuum_freeze_min_age 决定要不要冻结元组；当元组的年龄超过 vacuum_freeze_min_age 
+ *  后可以进行 freeze
+ * 
+ * 为了保证上文中同一数据库的最老最新事务差不超过2^31的原则，两次 aggressive vacuum 之间的
+ * 新老事务差不能超过2^31，即 vacuum_freeze_table_age 不能超过20亿减 vacuum_freeze_min_age。
+ * 但是看上面的参数，很明显不能保证这个约束，为了解决这个问题，pg引入了 autovacuum_freeze_max_age 
+ * 参数。
+ * 
+ * autovacuum_freeze_max_age: 如果当前最新的txid减去元组的 t_xmin>=autovacuum_freeze_max_age，
+ * 则元组对应的表会强制进行 autovacuum（即使已经关闭了autovacuum）。该参数最小值为2亿，最大值为20亿.
+ * 
+ * 也就是说，在经过 autovacuum_freeze_max_age - vacuum_freeze_min_age 的 txid 增长之后，这个
+ * 表肯定会被强制进行一次 freeze。因为 autovacuum_freeze_max_age 最大值为20亿，所以在两次 freeze
+ * 之间，txid 的增长肯定不会超过20亿，这就保证了上文中所说的20亿原则
+*/
 int			vacuum_freeze_table_age;
 int			vacuum_multixact_freeze_min_age;
 int			vacuum_multixact_freeze_table_age;

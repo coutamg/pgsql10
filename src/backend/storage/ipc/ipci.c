@@ -91,12 +91,22 @@ RequestAddinShmemSpace(Size size)
  *
  * If "makePrivate" is true then we only need private memory, not shared
  * memory.  This is true for a standalone backend, false for a postmaster.
+ * 
+ * 这由 postmaster 或独立 backend 调用。在 EXEC_BACKEND 案例中，从 postmaster 派生出
+ * 来的 backend 也会调用它。在后一种情况下，共享内存段已经存在并且已经被物理连接到，但是我们
+ * 必须在本地内存中初始化引用共享结构的指针，因为我们没有像在 fork() 场景中那样从 postmaster
+ * 继承正确的指针值。最简单的方法是运行与之前相同的代码。(注意，被调用的例程主要检查
+ * IsUnderPostmaster，而不是 EXEC_BACKEND 来检测这种情况。这有点浪费代码，可以清除掉。)
+ * 
+ * 可以参考 ipci_shm.png 
+ * https://blog.csdn.net/BeiiGang/article/details/7163465
  */
 void
 CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 {
 	PGShmemHeader *shim = NULL;
 
+	/* 下面这些是 postmaster 执行的过程 */
 	if (!IsUnderPostmaster)
 	{
 		PGShmemHeader *seghdr;
@@ -119,11 +129,13 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = 100000;
 		size = add_size(size, PGSemaphoreShmemSize(numSemas));
 		size = add_size(size, SpinlockSemaSize());
+		/* ShmemIndex hash table 的共享内存 */
 		size = add_size(size, hash_estimate_size(SHMEM_INDEX_SIZE,
 												 sizeof(ShmemIndexEnt)));
 		size = add_size(size, BufferShmemSize());
 		size = add_size(size, LockShmemSize());
 		size = add_size(size, PredicateLockShmemSize());
+		/* procblobal 全局的共享内存 */
 		size = add_size(size, ProcGlobalShmemSize());
 		size = add_size(size, XLOGShmemSize());
 		size = add_size(size, CLOGShmemSize());
@@ -133,6 +145,7 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, BackgroundWorkerShmemSize());
 		size = add_size(size, MultiXactShmemSize());
 		size = add_size(size, LWLockShmemSize());
+		/* proc 的共享内存 */
 		size = add_size(size, ProcArrayShmemSize());
 		size = add_size(size, BackendStatusShmemSize());
 		size = add_size(size, SInvalShmemSize());
@@ -165,13 +178,20 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 
 		/*
 		 * Create the shmem segment
+		 * PGSharedMemoryCreate()函数创建给定大小的共享内存段并初始化一个PGShmemHeader结构类型
+		 * 标准头，且给释放内存注册回调函数。如果发现死postgres段就回收，但是和非postgres内存段碰
+		 * 撞后pg不会失败。这儿的想法是检测和重用崩溃的postmaster或backend进程已经分配的key
 		 */
 		seghdr = PGSharedMemoryCreate(size, makePrivate, port, &shim);
 
+		/* 使全局静态PGShmemHeader *类型变量ShmemSegHdr指到这个结构 */
 		InitShmemAccess(seghdr);
 
 		/*
 		 * Create semaphores
+		 * 分配存放信号的数组需要的内存到 mySemSet 数组并用 on_shmem_exit() 函数注册
+		 * ReleaseSemaphores() 函数到 on_shmem_exit_list 数组，这个数组大小和 backend
+		 * 进程数有关
 		 */
 		PGReserveSemaphores(numSemas, port);
 
@@ -211,11 +231,16 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 
 	/*
 	 * Set up shmem.c index hashtable
+	 * 分配并初始化shmem索引"ShmemIndex" —— 可扩展哈希表
+	 * backend 如何获得 ShmemIndex
 	 */
 	InitShmemIndex();
 
 	/*
 	 * Set up xlog, clog, and buffers
+	 */
+	/* 参考 https://blog.csdn.net/BeiiGang/article/details/7185773 
+	 * 具体流程参考 ipci_xloginit.png
 	 */
 	XLOGShmemInit();
 	CLOGShmemInit();

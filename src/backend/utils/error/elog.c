@@ -408,6 +408,15 @@ errstart(int elevel, const char *filename, int lineno,
  *
  * If elevel is ERROR or worse, control does not return to the caller.
  * See elog.h for the error level definitions.
+ * 
+ * ERROR,调用PG_RE_THROW, 类似于java、C++语言中的抛异常,结束当前调用;
+ * FATAL,调用proc_exit(1),会按正常流程清理释放资源并退出进程；
+ * PANIC或更严重级别,在控制台打印错误后直接abort.
+ * 
+ * 要慎重评估代码中的日志级别，不要轻易打elog(ERROR)、ereport(ERROR)或更严重级别的日志
+ * 如果出现一些小错误，但当前操作仍可继续的，可以打WARNING级别日志
+ * 如果出现错误且当前流程无法继续、但不影响其他业务请求的，可打印ERROR
+ * 如出现可能导致整个服务异常的问题，则打印FATAL甚至PANIC
  */
 void
 errfinish(int dummy,...)
@@ -480,6 +489,7 @@ errfinish(int dummy,...)
 		pq_endcopyout(true);
 
 	/* Emit the message to the right places */
+	// 打印日志 向 客户端发送异常或 报错
 	EmitErrorReport();
 
 	/* Now free up subsidiary data attached to stack entry, and release it */
