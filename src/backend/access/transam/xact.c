@@ -601,6 +601,22 @@ GetStableLatestTransactionId(void)
  *  再按照 父事务->子事务 的顺序递归调用 AssignTransactionId() 函数
  * 
  *  AssignTransactionId() 函数会再继续调用 GetNewTransactionId() 函数分配事务ID
+ * 
+ * 例如:
+ * begin;
+ * savepoint p1;
+ * savepoint p2;
+ * 
+ * 则 TransactionState 如下
+ * 
+ * [   子事务 p2       ]  [   子事务 p1       ]  [   顶层父事务       ]
+ * [transactionId:0   ]  [transactionId:0   ]  [transactionId:0   ]
+ * [subTransactionId:3]  [subTransactionId:2]  [subTransactionId:1]
+ * [name: p2		  ]  [name: p1 		    ]  [name: NULL 		  ]
+ * [parent            ]->[parent            ]->[parent: NULL      ]
+ * 
+ * 可以看到，最先进入 AssignTransactionId() 函数的参数是最底层事务（这里我们按照
+ * savepoint名字叫它 p2
  */
 static void
 AssignTransactionId(TransactionState s)
@@ -665,6 +681,13 @@ AssignTransactionId(TransactionState s)
 		 * 父事务->子事务的顺序递归调用AssignTransactionId()函数。通过这种方式，保证了
 		 * 父事务 id 一定先于子事务 id 分配（父事务id一定比子事务id小）。各层都递归执行完
 		 * 后，通过 pfree 释放 parents 数组占用资源
+		 * 
+		 * 开始递归执行，从顶层事务开始, 在这里给所有事务获取 Id
+		 * [   子事务 p2       ]  [   子事务 p1       ]  [   顶层父事务       ]
+ 		 * [transactionId:748 ]  [transactionId:747 ]  [transactionId:746 ]
+ 		 * [subTransactionId:3]  [subTransactionId:2]  [subTransactionId:1]
+ 		 * [name: p2		  ]  [name: p1 		    ]  [name: NULL 		  ]
+ 		 * [parent            ]->[parent            ]->[parent: NULL      ]
 		 */
 		while (parentOffset != 0)
 			AssignTransactionId(parents[--parentOffset]);
@@ -696,11 +719,15 @@ AssignTransactionId(TransactionState s)
 	 * 
 	 * 分配事务ID的工作在GetNewTransactionId函数中完成，事务ID的计数器保存在共享内存
 	 * 的VariableCacheData结构体中，每次获得事务ID之后都要对计数器做+1操作
+	 * 
+	 * 顶层的父事务，因此跳过了while循环，直接到了 s->fullTransactionId = 
+	 * GetNewTransactionId(isSubXact); 分配实际的事务 id
 	 */
 	s->transactionId = GetNewTransactionId(isSubXact);
 	if (!isSubXact)
 		XactTopTransactionId = s->transactionId;
 
+	/* 将事务ID的父子关系记入pg_subtrans目录 */
 	if (isSubXact)
 		SubTransSetParent(s->transactionId, s->parent->transactionId);
 
@@ -1263,6 +1290,8 @@ AtSubStart_ResourceOwner(void)
  * if the xact has no XID.  (We compute that here just because it's easier.)
  *
  * If you change this function, see RecordTransactionCommitPrepared also.
+ * 
+ * 参考 http://blog.itpub.net/6906/viewspace-2564132/
  */
 static TransactionId
 RecordTransactionCommit(void)
@@ -1280,6 +1309,7 @@ RecordTransactionCommit(void)
 	bool		wrote_xlog;
 
 	/* Get data needed for commit record */
+	/* 为WAL Record的commit record准备数据. */
 	nrels = smgrGetPendingDeletes(true, &rels);
 	nchildren = xactGetCommittedChildren(&children);
 	if (XLogStandbyInfoActive())
@@ -1290,6 +1320,7 @@ RecordTransactionCommit(void)
 	/*
 	 * If we haven't been assigned an XID yet, we neither can, nor do we want
 	 * to write a COMMIT record.
+	 * 如果我们还没有被分配一个XID，那么我们既不能也不想写一个 OMMIT 记录
 	 */
 	if (!markXidCommitted)
 	{
@@ -1298,11 +1329,15 @@ RecordTransactionCommit(void)
 		 * update, and hence XID assignment, so we shouldn't get here with any
 		 * pending deletes.  Use a real test not just an Assert to check this,
 		 * since it's a bit fragile.
+		 * 我们希望每个 smgrscheduleunlink 之后都有一个目录更新，因此进行 XID 分配，所以我
+		 * 们不应该在这里进行任何删除。使用真正的测试，而不仅仅是一个断言来检查它，因为它有点
+		 * 脆弱。
 		 */
 		if (nrels != 0)
 			elog(ERROR, "cannot commit a transaction that deleted files but has no xid");
 
 		/* Can't have child XIDs either; AssignTransactionId enforces this */
+		/* 没有 child XIDs, AssignTransactionId 会强制实现此逻辑 */
 		Assert(nchildren == 0);
 
 		/*
@@ -1315,6 +1350,11 @@ RecordTransactionCommit(void)
 		 * don't want to use that in case a commit record is emitted, so they
 		 * happen synchronously with commits (besides not wanting to emit more
 		 * WAL recoreds).
+		 * 没有指定 xid 的事务可以包含失效消息(例如显式 relcache 失效消息或 catcache 失效消
+		 * 息，用于就地更新);备机需要处理这些消息。我们不能在没有 xid 的情况下发出 
+		 * COMMIT WAL Record，而且我们也不想强制分配 xid，因为这对于 vacuum 来说是有问题的。
+         * 因此，我们发布一个定制的记录。 我们不希望在发出 COMMIT WAL Record 时使用它，因此它
+		 * 们与提交同步发生(除了不希望发出更多 WAL 记录之外)。
 		 */
 		if (nmsgs != 0)
 		{
@@ -1328,6 +1368,8 @@ RecordTransactionCommit(void)
 		 * should trigger flushing those entries the same as a commit record
 		 * would.  This will primarily happen for HOT pruning and the like; we
 		 * want these to be flushed to disk in due time.
+		 * 如果我们没有创建 XLOG 条目，我们已完成所有工作; 否则，我们应该像提交记录那样触发
+		 * 刷新这些条目。这主要发生在 HOT pruning 等;我们希望在适当的时候将它们刷新到磁盘。
 		 */
 		if (!wrote_xlog)
 			goto cleanup;
@@ -1339,14 +1381,17 @@ RecordTransactionCommit(void)
 		/*
 		 * Are we using the replication origins feature?  Or, in other words,
 		 * are we replaying remote actions?
+		 * 我们正在使用复制源特性吗?或者，换句话说，我们正在回放远程操作吗?
 		 */
 		replorigin = (replorigin_session_origin != InvalidRepOriginId &&
 					  replorigin_session_origin != DoNotReplicateId);
 
 		/*
 		 * Begin commit critical section and insert the commit XLOG record.
+		 * 开始进入提交关键部分并插入 commit XLOG 记录。
 		 */
 		/* Tell bufmgr and smgr to prepare for commit */
+		/* 通知 bufmgr 和 smgr 准备提交 */
 		BufmgrCommit();
 
 		/*
@@ -1356,17 +1401,25 @@ RecordTransactionCommit(void)
 		 * REDO after the XLOG record but fail to flush the pg_xact update to
 		 * disk, leading to loss of the transaction commit if the system
 		 * crashes a little later.
+		 * 将自己标记为“提交关键部分”。 这将强制并发检查点等待，直到我们更新了 pg_xact。
+         * 如果不这样做，检查点可以在 XLOG 记录之后设置 REDO， 但是无法将 pg_xact 更新刷新
+		 * 到磁盘，如果稍后系统崩溃，就会丢失事务提交
 		 *
 		 * Note: we could, but don't bother to, set this flag in
 		 * RecordTransactionAbort.  That's because loss of a transaction abort
 		 * is noncritical; the presumption would be that it aborted, anyway.
+		 * 注意:我们可以在 RecordTransactionAbort 中设置此标志，但不必费心。
+         * 这是因为事务中止的损失是无关紧要的;无论如何，假设它会回滚。
 		 *
 		 * It's safe to change the delayChkpt flag of our own backend without
 		 * holding the ProcArrayLock, since we're the only one modifying it.
 		 * This makes checkpoint's determination of which xacts are delayChkpt
 		 * a bit fuzzy, but it doesn't matter.
+		 * 在不保存 ProcArrayLock 的情况下更改自己的后端 delayChkpt 标志是安全的，因为
+		 * 只有我们在修改它。这使得检查点对哪些 xacts 是 delayChkpt 的判断有点模糊，但这
+		 * 无关紧要。
 		 */
-		START_CRIT_SECTION();
+		START_CRIT_SECTION();/* 进入临界区，提升错误为 panic */
 		MyPgXact->delayChkpt = true;
 
 		SetCurrentTransactionStopTimestamp();
@@ -1380,6 +1433,7 @@ RecordTransactionCommit(void)
 
 		if (replorigin)
 			/* Move LSNs forward for this replication origin */
+			/* 为该复制源向前移动LSNs */
 			replorigin_session_advance(replorigin_session_origin_lsn,
 									   XactLastRecEnd);
 
@@ -1388,9 +1442,12 @@ RecordTransactionCommit(void)
 		 * timestamp if there's no replication origin; otherwise, the
 		 * timestamp was already set in replorigin_session_origin_timestamp by
 		 * replication.
+		 * 记录提交时间戳。如果没有复制源，则该值来自普通的提交时间戳; 否则，通过复制已经在
+		 * replorigin_session_origin_timestamp 中设置了时间戳。
 		 *
 		 * We don't need to WAL-log anything here, as the commit record
 		 * written above already contains the data.
+		 * 我们不需要 WAL-log 在这里记录任何东西，因为上面写的提交记录已经包含了数据。
 		 */
 
 		if (!replorigin || replorigin_session_origin_timestamp == 0)
@@ -1417,7 +1474,15 @@ RecordTransactionCommit(void)
 	 * KnownAssignedXids machinery requires tracking every XID assignment.  It
 	 * might be OK to skip it only when wal_level < replica, but for now we
 	 * don't.)
-	 *
+	 * 检查是否希望执行异步提交. 如 synchronous_commit=off,可以允许异步执行 XLOG 刷新,或
+	 * 者如果当前事务没有执行 WAL-logged 操作或者不能分配 XID. 如果事务只写入临时和/或
+	 * unlogged 的表，那么即使它有一个 xid，它也不会写入任何 WAL。如果事务执行 HOT pruning,
+	 * 那么可以在没有 XID 的情况下写入 WAL. 在 crash 的情况下,此类事务引起的问题将无关紧要;
+	 * 临时表可以随时废弃,unlogged 表将被阶段, 而 HOT pruning 在稍后将被再次执行.(鉴于上述情
+	 * 况，您可能认为在本例中根本没有必要发出 XLO G记录，但我们目前并不尝试这样做。至少在热备份
+	 * 模式下，它肯定会导致问题，因为在这种模式下，KnownAssignedXids 机器需要跟踪每个 XID 分
+	 * 配。可能只在 wal_level < replica 时跳过它是可以的，但是现在我们不这样做。)
+	 * 
 	 * However, if we're doing cleanup of any non-temp rels or committing any
 	 * command that wanted to force sync commit, then we must flush XLOG
 	 * immediately.  (We must not allow asynchronous commit if there are any
@@ -1425,6 +1490,10 @@ RecordTransactionCommit(void)
 	 * the COMMIT record is flushed to disk.  We do allow asynchronous commit
 	 * if all to-be-deleted tables are temporary though, since they are lost
 	 * anyway if we crash.)
+	 * 但是，如果我们正在清理任何非临时的临时记录或提交想要强制同步提交的命令，那么我们必须
+	 * 立即刷新 XLOG。(如存在非临时表的删除操作,则不允许异步提交,因为我们可能在 COMMIT 
+	 * 记录刷到磁盘前已删除了文件.但如果将被删除的是临时表,我们确实可以允许异步提交,因为临
+	 * 时表在crash 也会丢弃)
 	 */
 	/* 需要将事务日志刷入磁盘，然后事务才能提交 */
 	if ((wrote_xlog && markXidCommitted &&
@@ -1437,22 +1506,27 @@ RecordTransactionCommit(void)
 		/*
 		 * Now we may update the CLOG, if we wrote a COMMIT record above
 		 * 更新事务的状态
+		 * 现在我们更新 CLOG,如果我们在上面已写入了 COMMIT WAL Record.
 		 */
 		if (markXidCommitted)
 			TransactionIdCommitTree(xid, nchildren, children);
 	}
 	else
 	{
-		/*
+		/* 异步提交
 		 * Asynchronous commit case:
 		 *
 		 * This enables possible committed transaction loss in the case of a
 		 * postmaster crash because WAL buffers are left unwritten. Ideally we
 		 * could issue the WAL write without the fsync, but some
 		 * wal_sync_methods do not allow separate write/fsync.
+		 * 这可能会导致在 postmaste r崩溃的情况下出现提交的事务丢失，因为 WAL buffer 是未
+		 * 持久化的。理想情况下，我们可以在没有 fsync 的情况下发出 WAL write，但是一些
+		 * wal_sync_methods 不允许单独的 write/fsync。
 		 *
 		 * Report the latest async commit LSN, so that the WAL writer knows to
 		 * flush this commit.
+		 * 反馈最后的异步提交 LSN,通知 WAL 写入器刷新此 commit
 		 * 设置异步提交的最新的 LSN
 		 */
 		XLogSetAsyncXactLSN(XactLastRecEnd);
@@ -1461,6 +1535,9 @@ RecordTransactionCommit(void)
 		 * We must not immediately update the CLOG, since we didn't flush the
 		 * XLOG. Instead, we store the LSN up to which the XLOG must be
 		 * flushed before the CLOG may be updated.
+		 * 我们不能马上更新 CLOG,因为我们还没有刷新 XLOG.相反的,我们存储 LSN 直至在 CLOG
+		 * 可能已更新前 XLOG 必须需要刷新的时候.
+		 * 
 		 * 将最新的 LSN 保存到异步提交的事务组中，不用等事务日志刷入磁盘即可提交事务，
 		 * 同时将事务的状态保存到 clog 中
 		 */
@@ -1471,6 +1548,7 @@ RecordTransactionCommit(void)
 	/*
 	 * If we entered a commit critical section, leave it now, and let
 	 * checkpoints proceed.
+	 * 如果已进入 commit 关键区域,已完成工作,可以离开了,让 checkpoints 执行相关操作.
 	 */
 	if (markXidCommitted)
 	{
@@ -1479,6 +1557,7 @@ RecordTransactionCommit(void)
 	}
 
 	/* Compute latestXid while we have the child XIDs handy */
+	/* 如持有子 XIDs,计算最后的 latestXid */
 	latestXid = TransactionIdLatest(xid, nchildren, children);
 
 	/*
@@ -1486,17 +1565,22 @@ RecordTransactionCommit(void)
 	 * above about using committing asynchronously we only want to wait if
 	 * this backend assigned an xid and wrote WAL.  No need to wait if an xid
 	 * was assigned due to temporary/unlogged tables or due to HOT pruning.
+	 * 如需要,等待同步复制.与上述使用异步提交的决定类似,我们只想在该进程已分配和写入 WAL 的
+	 * 情况才等待.临时/unlogged 表或者 HOT pruning,不需要等待事务 ID 是否已分配.
 	 *
 	 * Note that at this stage we have marked clog, but still show as running
 	 * in the procarray and continue to hold locks.
+	 * 注意在这个场景下,我们必须标记 clog,但在 procarray 中仍显示为 running,并一直持有锁.
 	 */
 	if (wrote_xlog && markXidCommitted)
 		SyncRepWaitForLSN(XactLastRecEnd, true);
 
 	/* remember end of last commit record */
+	/* 记录最后commit记录的位置 */
 	XactLastCommitEnd = XactLastRecEnd;
 
 	/* Reset XactLastRecEnd until the next transaction writes something */
+	/* 重置 XactLastRecEnd 直至下个事务写入数据 */
 	XactLastRecEnd = 0;
 cleanup:
 	/* Clean up local data */
@@ -1948,19 +2032,22 @@ AtSubCleanup_Memory(void)
 
 /*
  *	StartTransaction
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124637255
  */
 static void
 StartTransaction(void)
 {
-	TransactionState s;
-	VirtualTransactionId vxid;
+	TransactionState s; /* 事务栈结构体 */
+	VirtualTransactionId vxid; /* 虚拟事务id */
 
 	/*
 	 * Let's just make sure the state stack is empty
+	 * 确保事务栈是空的
 	 */
 	s = &TopTransactionStateData;
-	CurrentTransactionState = s;
+	CurrentTransactionState = s; /* 当前事务 */
 
+	/* XactTopTransactionId 在 AssignTransactionId 被赋值 */
 	Assert(XactTopTransactionId == InvalidTransactionId);
 
 	/*
@@ -1973,8 +2060,11 @@ StartTransaction(void)
 	/*
 	 * set the current transaction state information appropriately during
 	 * start processing
+	 * 在启动过程中设置当前事务状态信息。请注意，一旦切换了事务状态，在后续获取用户ID和
+	 * 安全上下文标志前，不会出现异常
 	 */
-	s->state = TRANS_START;
+	s->state = TRANS_START; /* 修改事务状态 */
+	/* 因为事务id尚未分配，目前是 invalid 的，InvalidTransactionId 其实就是0 */
 	s->transactionId = InvalidTransactionId;	/* until assigned */
 
 	/*
@@ -1984,6 +2074,9 @@ StartTransaction(void)
 	 * We have lower level defences in XLogInsert and elsewhere to stop us
 	 * from modifying data during recovery, but this gives the normal
 	 * indication to the user that the transaction is read-only.
+	 * 
+	 * 如仍处于恢复过程，标志此事务为只读. 在 XLogInsert 中和其他地方有低级别
+	 * 的保护机制确保在恢复过程中不会更新数据，只是给用户正常的提示，说明事务只读
 	 */
 	if (RecoveryInProgress())
 	{
@@ -2002,6 +2095,7 @@ StartTransaction(void)
 
 	/*
 	 * reinitialize within-transaction counters
+	 * 重新初始化事务内计数器
 	 */
 	s->subTransactionId = TopSubTransactionId;
 	currentSubTransactionId = TopSubTransactionId;
@@ -2010,12 +2104,14 @@ StartTransaction(void)
 
 	/*
 	 * initialize reported xid accounting
+	 * 初始化已报告的事务计数
 	 */
 	nUnreportedXids = 0;
 	s->didLogXid = false;
 
 	/*
 	 * must initialize resource-management stuff first
+	 * 首先初始化资源管理器
 	 * 初始化了两个 MemoryContext, 一个是 abort 事务用的，
 	 * 另外一个是 Top 事务用的
 	 */
@@ -2040,12 +2136,15 @@ StartTransaction(void)
 	/*
 	 * Lock the virtual transaction id before we announce it in the proc array
 	 * 只把本地事务 ID 保存到 PGPROC 中
+	 * 锁住该虚拟事务id
 	 */
 	VirtualXactLockTableInsert(vxid);
 
 	/*
 	 * Advertise it in the proc array.  We assume assignment of
 	 * LocalTransactionID is atomic, and the backendId should be set already.
+	 * 在proc array中声明。假定 LocalTransactionID 是原子的且 backendId 已分配。将
+	 * 本地事务 id 保存至当前进程队列（PROC）
 	 */
 	Assert(MyProc->backendId == vxid.backendId);
 	MyProc->lxid = vxid.localTransactionId;
@@ -2057,6 +2156,8 @@ StartTransaction(void)
 	 * as the first command's statement_timestamp(), so don't do a fresh
 	 * GetCurrentTimestamp() call (which'd be expensive anyway).  Also, mark
 	 * xactStopTimestamp as unset.
+	 * 
+	 * 设置时间戳。设置事务开始时间 = 命令开始时间，并初始化事务结束时间=0
 	 */
 	xactStartTimestamp = stmtStartTimestamp;
 	xactStopTimestamp = 0;
@@ -2066,20 +2167,25 @@ StartTransaction(void)
 	 * initialize current transaction state fields
 	 *
 	 * note: prevXactReadOnly is not used at the outermost level
+	 * 初始化事务结构体字段，注意: prevXactReadOnly 不会在最外层中使用
 	 */
 	s->nestingLevel = 1;
 	s->gucNestLevel = 1;
 	s->childXids = NULL;
 	s->nChildXids = 0;
 	s->maxChildXids = 0;
+	/* 一旦当前用户ID和安全上下文标记已提取,即使事务启动失败，也会正确地重置它们 */
 	GetUserIdAndSecContext(&s->prevUser, &s->prevSecContext);
-	/* SecurityRestrictionContext should never be set outside a transaction */
+	/* SecurityRestrictionContext should never be set outside a transaction
+	 * SecurityRestrictionContext不应在事务外设置
+	 */
 	Assert(s->prevSecContext == 0);
 
 	/*
 	 * initialize other subsystems for new transaction
-	 * 记录 GUC 参数的值，比如在子事务中(例如 SAVEPOINT)，多个事务对同一个 GUC 参数设置了不同
-	 * 的值，需要记录这个修改历史，在 ROLLBACK TO SAVEPOINT 的时候进行恢复
+	 * 记录 GUC 参数的值，比如在子事务中(例如 SAVEPOINT)，多个事务对同一个 GUC 参
+	 * 数设置了不同 的值，需要记录这个修改历史，在 ROLLBACK TO SAVEPOINT 的时候
+	 * 进行恢复
 	 */
 	AtStart_GUC();
 	/* 失效消息机制 */
@@ -2091,6 +2197,7 @@ StartTransaction(void)
 	 * done with start processing, set current transaction state to "in
 	 * progress"
 	 * 启动事务相关工作结束，事务进入 “进行中” 状态
+	 * 启动事务完成，将事务状态改为TRANS_INPROGRESS
 	 */
 	s->state = TRANS_INPROGRESS;
 
@@ -2102,17 +2209,19 @@ StartTransaction(void)
  *	CommitTransaction
  *
  * NB: if you change this routine, better look at PrepareTransaction too!
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124641317
  */
 static void
 CommitTransaction(void)
 {
-	TransactionState s = CurrentTransactionState;
+	TransactionState s = CurrentTransactionState; /* 事务栈 */
 	TransactionId latestXid;
 	bool		is_parallel_worker;
 
 	is_parallel_worker = (s->blockState == TBLOCK_PARALLEL_INPROGRESS);
 
 	/* Enforce parallel mode restrictions during parallel worker commit. */
+	/* 如果是并行worker提交，强制进入并行模式. */
 	if (is_parallel_worker)
 		EnterParallelMode();
 
@@ -2120,6 +2229,7 @@ CommitTransaction(void)
 
 	/*
 	 * check the current transaction state
+	 * 检查当前事务状态
 	 */
 	if (s->state != TRANS_INPROGRESS)
 		elog(WARNING, "CommitTransaction while in %s state",
@@ -2131,11 +2241,14 @@ CommitTransaction(void)
 	 * as triggers.  Since closing cursors could queue trigger actions,
 	 * triggers could open cursors, etc, we have to keep looping until there's
 	 * nothing left to do.
+	 * 执行涉及调用用户定义代码(如触发器)的预提交处理。因为关闭游标可能会执行触发器，触发
+	 * 器可能打开游标等等，所以我们必须一直循环，直到没有什么可做的。
 	 */
 	for (;;)
 	{
 		/*
 		 * Fire all currently pending deferred triggers.
+		 * 触发所有 after 触发器
 		 */
 		AfterTriggerFireDeferred();
 
@@ -2143,6 +2256,9 @@ CommitTransaction(void)
 		 * Close open portals (converting holdable ones into static portals).
 		 * If there weren't any, we are done ... otherwise loop back to check
 		 * if they queued deferred triggers.  Lather, rinse, repeat.
+		 * 
+		 * 关闭打开的 portals（将holdable portals转换为static portals），portals
+		 * 好像是一种内存资源？循环检查触发器队列直至全部关闭完
 		 */
 		if (!PreCommit_Portals(false))
 			break;
@@ -2156,28 +2272,38 @@ CommitTransaction(void)
 	 * to start shutting down within-transaction services.  But note that most
 	 * of this stuff could still throw an error, which would switch us into
 	 * the transaction-abort path.
+	 * 
+	 * 剩余的操作不能调用用户自定义的代码，因此可以安全地开始关闭事务内的服务。
+     * 但是请注意，大多数这些动作仍然会抛出错误，这会导致流程切换到事务中止的
+	 * 路径上。
 	 */
 
 	/* If we might have parallel workers, clean them up now. */
+	/* 如果有并行 workers, 需要清理 */
 	if (IsInParallelMode())
 		AtEOXact_Parallel(true);
 
-	/* Shut down the deferred-trigger manager */
+	/* Shut down the deferred-trigger manager 关闭延迟触发器管理器 */
 	AfterTriggerEndXact(true);
 
 	/*
 	 * Let ON COMMIT management do its thing (must happen after closing
 	 * cursors, to avoid dangling-reference problems)
+	 * 由 ON COMMIT 管理器执行（必须在关闭游标后执行，避免挂起引用问题）
 	 */
 	PreCommit_on_commit_actions();
 
 	/* close large objects before lower-level cleanup */
+	/* 在低级别清理前关闭大对象 */
 	AtEOXact_LargeObject(true);
 
 	/*
 	 * Mark serializable transaction as complete for predicate locking
 	 * purposes.  This should be done as late as we can put it and still allow
 	 * errors to be raised for failure patterns found at commit.
+	 * 
+	 * 为了实现谓词锁定的目的，将可序列化事务标记为完成。这应该在我们能提交的最晚的时候完
+	 * 成，并且仍然允许在提交时发现的失败模式引发错误。
 	 */
 	PreCommit_CheckForSerializationFailure();
 
@@ -2185,18 +2311,26 @@ CommitTransaction(void)
 	 * Insert notifications sent by NOTIFY commands into the queue.  This
 	 * should be late in the pre-commit sequence to minimize time spent
 	 * holding the notify-insertion lock.
+	 * 
+	 * 将 NOTIFY 命令发送的通知插入到队列中。这应该在预提交序列的末尾，以最小化持有
+	 * notify-insertion 锁的时间。然而这可能导致创建一个快照，因此必须在序列化
+	 * 清理前执行这步。
 	 */
 	PreCommit_Notify();
 
 	/* Prevent cancel/die interrupt while cleaning up */
+	/* 清理期间禁用中断，避免被打断 */
 	HOLD_INTERRUPTS();
 
 	/* Commit updates to the relation map --- do this as late as possible */
+	/* 提交更新到 relation map -- 尽量晚地执行该动作 */
 	AtEOXact_RelationMap(true);
 
 	/*
 	 * set the current transaction state information appropriately during
 	 * commit processing
+	 * 
+	 * 设置事务状态为已提交 s->state = TRANS_COMMIT;
 	 */
 	s->state = TRANS_COMMIT;
 	s->parallelModeLevel = 0;
@@ -2206,6 +2340,7 @@ CommitTransaction(void)
 		/*
 		 * We need to mark our XIDs as committed in pg_xact.  This is where we
 		 * durably commit.
+		 * 将已提交的xid保存在pg_xact中（事务日志写回磁盘），这是我们持久化提交的位置
 		 */
 		latestXid = RecordTransactionCommit();
 	}
@@ -2214,12 +2349,13 @@ CommitTransaction(void)
 		/*
 		 * We must not mark our XID committed; the parallel master is
 		 * responsible for that.
+		 * 并行worker则不需要标记，由并行leader处理
 		 */
 		latestXid = InvalidTransactionId;
 
 		/*
 		 * Make sure the master will know about any WAL we wrote before it
-		 * commits.
+		 * commits. 确保leader在提交之前知道worker写入的WAL
 		 */
 		ParallelWorkerReportLastRecEnd(XactLastRecEnd);
 	}
@@ -2230,6 +2366,9 @@ CommitTransaction(void)
 	 * Let others know about no transaction in progress by me. Note that this
 	 * must be done _before_ releasing locks we hold and _after_
 	 * RecordTransactionCommit.
+	 * 
+	 * 通知其他进程，本进程中已没有进行中的事务。
+     * 注意，这必须在释放持有的锁之前、RecordTransactionCommit 之后执行。
 	 */
 	ProcArrayEndTransaction(MyProc, latestXid);
 
@@ -2237,16 +2376,26 @@ CommitTransaction(void)
 	 * This is all post-commit cleanup.  Note that if an error is raised here,
 	 * it's too late to abort the transaction.  This should be just
 	 * noncritical resource releasing.
+	 * 
+	 * 这些都是提交后清理。 请注意，如果这里才出现错误终止事务就太迟了，这应该是非关键的
+	 * 资源释放
 	 *
 	 * The ordering of operations is not entirely random.  The idea is:
 	 * release resources visible to other backends (eg, files, buffer pins);
 	 * then release locks; then release backend-local resources. We want to
 	 * release locks at the point where any backend waiting for us will see
 	 * our transaction as being fully cleaned up.
+	 * 
+	 * 操作的顺序并不是完全随机的。其思想是：先释放对其他后台进程可见的资源（如文件、buffer 
+	 * pins），然后释放锁，最后释放后端本地资源。我们希望在所有等待本后台进程看到本事务被
+	 * 完全清理时才释放锁。
 	 *
 	 * Resources that can be associated with individual queries are handled by
 	 * the ResourceOwner mechanism.  The other calls here are for backend-wide
 	 * state.
+	 * 
+	 * 与单个查询关联的资源由 ResourceOwner 机制处理。这里的其他调用是针对后台进程范围状
+	 * 态的。
 	 */
 
 	CallXactCallbacks(is_parallel_worker ? XACT_EVENT_PARALLEL_COMMIT
@@ -2257,9 +2406,11 @@ CommitTransaction(void)
 						 true, true);
 
 	/* Check we've released all buffer pins */
+	/* 检查所有已释放的 buffer pins */
 	AtEOXact_Buffers(true);
 
 	/* Clean up the relation cache */
+	/* 清理关系缓存 */
 	AtEOXact_RelationCache(true);
 
 	/*
@@ -2268,11 +2419,16 @@ CommitTransaction(void)
 	 * AtEOXact_RelationCache), but before locks are released (if anyone is
 	 * waiting for lock on a relation we've modified, we want them to know
 	 * about the catalog change before they start using the relation).
+	 * 
+	 * 使目录更改对所有后台进程可见。这必须发生在 relcache 引用被删除之后(参见
+	 * AtEOXact_RelationCache 注释)，但在锁被释放之前（如果有人在等待我们修改了的表
+	 * 的锁，我们希望他们在开始使用该表前知道目录的更改)。
 	 */
 	AtEOXact_Inval(true);
 
 	AtEOXact_MultiXact();
 
+	/* 释放锁的资源 */
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_LOCKS,
 						 true, true);
@@ -2288,10 +2444,16 @@ CommitTransaction(void)
 	 * this may take many seconds, also delay until after releasing locks.
 	 * Other backends will observe the attendant catalog changes and not
 	 * attempt to access affected files.
+	 * 
+	 * 同样，在事务期间删除的文件的清理最好在释放 relcache 和 buffer pin 之后进行。(这
+	 * 在提交过程中并不是必须的，因为这样的 pins 应该已经被释放了，但是该顺序在中止过程中
+	 * 绝对是至关重要的。) 因为这可能需要较长的时间，所以也要延迟到释放锁之后。其他后台进程
+	 * 将监控相关的 catalog 更改，不尝试访问受影响的文件。
 	 */
 	// 事务提交后开始处理需要删除的事情
 	smgrDoPendingDeletes(true);
 
+	/* 一大波资源清理 */
 	AtCommit_Notify();
 	AtEOXact_GUC(true, 1);
 	AtEOXact_SPI(true);
@@ -2314,6 +2476,7 @@ CommitTransaction(void)
 
 	AtCommit_Memory();
 
+	/* 重置事务栈变量 */
 	s->transactionId = InvalidTransactionId;
 	s->subTransactionId = InvalidSubTransactionId;
 	s->nestingLevel = 0;
@@ -2328,10 +2491,11 @@ CommitTransaction(void)
 	/*
 	 * done with commit processing, set current transaction state back to
 	 * default
+	 * 完成事务提交后，将当前事务状态改回 TRANS_DEFAULT
 	 */
 	s->state = TRANS_DEFAULT;
 
-	RESUME_INTERRUPTS();
+	RESUME_INTERRUPTS();/* 恢复中断 */
 }
 
 
@@ -2614,6 +2778,7 @@ PrepareTransaction(void)
 
 /*
  *	AbortTransaction
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124678256
  */
 static void
 AbortTransaction(void)
@@ -2623,9 +2788,11 @@ AbortTransaction(void)
 	bool		is_parallel_worker;
 
 	/* Prevent cancel/die interrupt while cleaning up */
+	/* 清理期间避免被中断 参考 ProcessInterrupts */
 	HOLD_INTERRUPTS();
 
 	/* Make sure we have a valid memory context and resource owner */
+	/* 确认我们有有效的内存上下文和资源管理器 */
 	AtAbort_Memory();
 	AtAbort_ResourceOwner();
 
@@ -2634,26 +2801,31 @@ AbortTransaction(void)
 	 * (Regular locks, however, must be held till we finish aborting.)
 	 * Releasing LW locks is critical since we might try to grab them again
 	 * while cleaning up!
+	 * 释放所有轻量锁，而常规锁则在完成 abort 后才释放
 	 */
 	LWLockReleaseAll();
 
 	/* Clear wait information and command progress indicator */
+	/* 清理等待信息和命令进度指示器 */
 	pgstat_report_wait_end();
 	pgstat_progress_end_command();
 
 	/* Clean up buffer I/O and buffer context locks, too */
+	/* 清理 buffer I/O 和 buffer 上下文锁 */
 	AbortBufferIO();
 	UnlockBuffers();
 
 	/* Reset WAL record construction state */
+	/* 重置WAL记录结构状态 */
 	XLogResetInsertion();
 
-	/* Cancel condition variable sleep */
+	/* Cancel condition variable sleep 取消条件变量sleep */
 	ConditionVariableCancelSleep();
 
 	/*
 	 * Also clean up any open wait for lock, since the lock manager will choke
 	 * if we try to wait for another lock before doing this.
+	 * 清理所有在等待的锁，如果在这步前有在等待的锁，锁管理器将会抑制它
 	 */
 	LockErrorCleanup();
 
@@ -2663,6 +2835,7 @@ AbortTransaction(void)
 	 * longjmp'ing out of the SIGINT handler (see notes in handle_sig_alarm).
 	 * We delay this till after LockErrorCleanup so that we don't uselessly
 	 * reschedule lock or deadlock check timeouts.
+	 * 处理超时事件
 	 */
 	reschedule_timeouts();
 
@@ -2675,6 +2848,7 @@ AbortTransaction(void)
 
 	/*
 	 * check the current transaction state
+	 * 检查当前事务状态
 	 */
 	is_parallel_worker = (s->blockState == TBLOCK_PARALLEL_INPROGRESS);
 	if (s->state != TRANS_INPROGRESS && s->state != TRANS_PREPARE)
@@ -2685,8 +2859,10 @@ AbortTransaction(void)
 	/*
 	 * set the current transaction state information appropriately during the
 	 * abort processing
+	 * 状态设置
 	 */
 	s->state = TRANS_ABORT;
+	/* 此时 state = TRANS_ABORT, blockState = TBLOCK_ABORT_PENDING */
 
 	/*
 	 * Reset user ID which might have been changed transiently.  We need this
@@ -2697,10 +2873,12 @@ AbortTransaction(void)
 	 * (Note: it is not necessary to restore session authorization or role
 	 * settings here because those can only be changed via GUC, and GUC will
 	 * take care of rolling them back if need be.)
+	 * 设置用户id和安全上下文
 	 */
 	SetUserIdAndSecContext(s->prevUser, s->prevSecContext);
 
 	/* If in parallel mode, clean up workers and exit parallel mode. */
+	/* 如果是并行模式，清理并退出并行模式 */
 	if (IsInParallelMode())
 	{
 		AtEOXact_Parallel(false);
@@ -2722,6 +2900,7 @@ AbortTransaction(void)
 	 * far as assigning an XID to advertise).  But if we're inside a parallel
 	 * worker, skip this; the user backend must be the one to write the abort
 	 * record.
+	 * 非并行模式，要将abort操作记录到 XLOG 日志
 	 */
 	if (!is_parallel_worker)
 		latestXid = RecordTransactionAbort(false);
@@ -2794,6 +2973,10 @@ AbortTransaction(void)
 
 /*
  *	CleanupTransaction
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124678256
+ * 释放事务所占用的内存资源。与 AbortTransaction 的区别：该函数是终止事务退出时最后调
+ * 用的函数，做最后的实际清理工作。而 AbortTransaction 没有实际释放相关资源，只是切换
+ * 一些资源的状态，使其能够被其他事务获得。
  */
 static void
 CleanupTransaction(void)
@@ -2802,6 +2985,7 @@ CleanupTransaction(void)
 
 	/*
 	 * State should still be TRANS_ABORT from AbortTransaction().
+	 * 事务状态应该为 TRANS_ABORT，因为本函数在 AbortTransaction() 之后调用
 	 */
 	if (s->state != TRANS_ABORT)
 		elog(FATAL, "CleanupTransaction: unexpected state %s",
@@ -2810,7 +2994,9 @@ CleanupTransaction(void)
 	/*
 	 * do abort cleanup processing
 	 */
+	/* 安全地释放portal内存 */
 	AtCleanup_Portals();		/* now safe to release portal memory */
+	/* 释放事务快照 */
 	AtEOXact_Snapshot(false, true); /* and release the transaction's snapshots */
 
 	CurrentResourceOwner = NULL;	/* and resource owner */
@@ -2837,6 +3023,7 @@ CleanupTransaction(void)
 	/*
 	 * done with abort processing, set current transaction state back to
 	 * default
+	 * 修改事务状态
 	 */
 	s->state = TRANS_DEFAULT;
 }

@@ -111,7 +111,7 @@ do { \
 } while(0)
 #endif							/* WIN32 */
 
-
+/* 参考 ProcessInterrupts */
 #define HOLD_INTERRUPTS()  (InterruptHoldoffCount++)
 
 #define RESUME_INTERRUPTS() \
@@ -129,6 +129,7 @@ do { \
 } while(0)
 /* 参考 https://www.modb.pro/db/26852 
  * https://blog.csdn.net/qq_37517281/article/details/105956813
+ * 设置了 CritSectionCount 也不能中断 参考 ProcessInterrupts
  */
 #define START_CRIT_SECTION()  (CritSectionCount++)
 

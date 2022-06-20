@@ -21,6 +21,8 @@
  * LOCKMODE is an integer (1..N) indicating a lock type.  LOCKMASK is a bit
  * mask indicating a set of held or requested lock types (the bit 1<<mode
  * corresponds to a particular lock mode).
+ * 
+ * LOCKMODE 是当整型用的，而 LOCKMASK 是当位图用的
  */
 typedef int LOCKMASK;
 typedef int LOCKMODE;

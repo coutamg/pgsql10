@@ -626,6 +626,12 @@ inline_set_returning_functions(PlannerInfo *root)
  *		grouping/aggregation then we can merge it into the parent's jointree.
  *		Also, subqueries that are simple UNION ALL structures can be
  *		converted into "append relations".
+ * 子查询和子连接不同， 它出现在 RangeTableEntry 中，它存储的是一个子查询树，如果这个子查
+ * 询树不被提升，则经过查询优化之后形成一个子执行计划，上层执行计划和子查询计划做 嵌套循环得到
+ * 最终结果，在这个过程中 ，查询优化模块对这个子查询所能做的优化选择较少。 
+ * 
+ * 如果这个子查询被提升，转换成与上层的连接(Join)，由于查询优化模块对连接操作的优化做了很多工
+ * 作，因此可能获得更好的执行计划 。
  */
 void
 pull_up_subqueries(PlannerInfo *root)
@@ -693,14 +699,31 @@ pull_up_subqueries(PlannerInfo *root)
  * with a FromExpr, and that can't happen here.  Instead, we set the
  * root->hasDeletedRTEs flag, which tells pull_up_subqueries() that an
  * additional pass over the tree is needed to clean up.
+ * 
+ * 对 Query->jointree 进行递归遍历，针对 Query->jointree 中可能出现的 RangeTblRef、
+ * FromExpr、JoinExpr 进行了不同的处理。
  */
 static Node * // 经过子查询提升处理之后的 jtnode 节点
-pull_up_subqueries_recurse(PlannerInfo *root, // 查询优化模块的上下文信息结构体
-						   // 需要递归处理的节点， 可能是 RangeTblRef,FromExpr或 JoinExpr
+pull_up_subqueries_recurse(/* 查询优化模块的上下文信息结构体, 贯穿整个查询优化模块 */
+						   PlannerInfo *root, 
+						   /* 需要递归处理的Node， 可能是 RangeTblRef,FromExpr或 JoinExpr */
 						   Node *jtnode,
+						   /* 如果在 JoinExpr 中存在外连接，则它是整个外连接的 Node节点，包含内
+						    * 表和外表 
+							*/
 						   JoinExpr *lowest_outer_join,
+						   /* 如果在 JoinExpr 中存在外连接，则它是外连接中的 nullable side,
+						    * 如果是左外连接，则这里是右表，如果是右外连接，这里是左表，如果是全外
+							* 连接，这里是整个外连接的 Node 节点
+						    */
 						   JoinExpr *lowest_nulling_outer_join,
+						   /* 对于 RangeTblRef 中存在 RTE_SUBQUERY(union）的情况，调用 
+						    * pull_up_simple_union_all 函数，分别处理 union 操作下的子查询
+						    */
 						   AppendRelInfo *containing_appendrel,
+						   /* 和 root->hasDeletedRTE 结合使用, 对于 RTE VALUES 类型的子查询
+						    * 和无范围表的情况，子查询提升后会产生可以删除的节点
+						    */
 						   bool deletion_ok)
 {
 	Assert(jtnode != NULL);
@@ -708,7 +731,10 @@ pull_up_subqueries_recurse(PlannerInfo *root, // 查询优化模块的上下文�
 	{
 		int			varno = ((RangeTblRef *) jtnode)->rtindex;
 		RangeTblEntry *rte = rt_fetch(varno, root->parse->rtable);
-
+		/*
+		 * RangeTblRef 结构体又细分成 RTE_SUBQUERY(simple)、RTE_SUBQUERY(union)、
+		 * RTE_VALUES
+		 */
 		/*
 		 * Is this a subquery RTE, and if so, is the subquery simple enough to
 		 * pull up?
@@ -761,7 +787,10 @@ pull_up_subqueries_recurse(PlannerInfo *root, // 查询优化模块的上下文�
 		ListCell   *l;
 
 		Assert(containing_appendrel == NULL);
-
+		/*
+		 * 对于 FromExpr，因为 FromExpr-＞fomlist 中的范围表默认是内连接，所以只需要遍历
+		 * FromExpr->fomlist 中的节点，这里主要判断下层的节点是否存在可删除的情况
+		 */
 		/*
 		 * If the FromExpr has quals, it's not deletable even if its parent
 		 * would allow deletion.
@@ -1429,6 +1458,8 @@ make_setop_translation_list(Query *query, Index newvarno,
  * processed copy of that.)
  * lowest_outer_join is the lowest outer join above the subquery, or NULL.
  * deletion_ok is TRUE if it'd be okay to delete the subquery entirely.
+ * 
+ * 判断是否是一个简单的子查询,即是一个 SPJ(select, projext, join) 查询
  */
 static bool
 is_simple_subquery(Query *subquery, RangeTblEntry *rte,
@@ -1437,6 +1468,7 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 {
 	/*
 	 * Let's just make sure it's a valid subselect ...
+	 * 做一个确认，必须是一个子查询树，而且是 SELECT 查询语句。
 	 */
 	if (!IsA(subquery, Query) ||
 		subquery->commandType != CMD_SELECT)
@@ -1446,6 +1478,9 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 	 * Can't currently pull up a query with setops (unless it's simple UNION
 	 * ALL, which is handled by a different code path). Maybe after querytree
 	 * redesign...
+	 * 
+	 * 子查询树的 subQuery->setOperations 必须是 NULL，如果不是 NULL ，
+	 * 应该先交给 pull_up_simple_union_all 函数去处理。
 	 */
 	if (subquery->setOperations)
 		return false;
@@ -1459,6 +1494,7 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 	 * higher than it should.  Implicit FOR UPDATE/SHARE is okay because in
 	 * that case the locking was originally declared in the upper query
 	 * anyway.
+	 * 不能包含聚集操作, 窗口函数、 GROUP 操作等 ，
 	 */
 	if (subquery->hasAggs ||
 		subquery->hasWindowFuncs ||
@@ -1513,6 +1549,11 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 	 * that its targetlist contains no set-returning functions.  Deletion from
 	 * a FROM list or inner JOIN is okay only if the subquery must return
 	 * exactly one row.
+	 * 
+	 * 如果没有范围表，那么在无约束条件或者满足删除条件或者不是外连接的情况下才能提升，这是
+	 * 因为在物理优化阶段所有的表都会建立一个 RelOptlnfo ，如果空范围表的子查 询不提升，那
+	 * 么可以用 RelOptlnfo 来表示子查询，然后可 以将这个 RelOptlnfo 优化成一 个 Result 
+	 * 计划节点，如果将空范围表提升上来，那么无法用 RelOptlnfo 表示它
 	 */
 	if (subquery->jointree->fromlist == NIL &&
 		(subquery->jointree->quals != NULL ||
@@ -1522,6 +1563,20 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 
 	/*
 	 * If the subquery is LATERAL, check for pullup restrictions from that.
+	 * LATERAL 语法参考 https://www.modb.pro/db/82295
+	 * 
+	 * SELECT <columns>
+  	 *	FROM <table reference>,
+     *		 LATERAL <inner subquery>;
+	 *
+	 * result = []
+     * for row1 in table_reference():
+     *     for row2 in inner_subquery(row1):
+     *         result += (row1, row2)
+	 * 
+	 * 涉及到的 EXPLAIN http://mysql.taobao.org/monthly/2018/11/06/
+	 * Volcano 模型 https://blog.csdn.net/Night_ZW/article/details/108359831
+	 * 另外的模型 https://blog.csdn.net/Night_ZW/article/details/108359927
 	 */
 	if (rte->lateral)
 	{
@@ -1536,6 +1591,9 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 		 * postpone quals from below an outer join to above it, which is
 		 * probably completely wrong and in any case is a complication that
 		 * doesn't seem worth addressing at the moment.
+		 * 
+		 * Lateral 语义支持在子查询中引用上一层的表，但是如果引用的是更上层的表，可能会出
+	 	 * 现问题
 		 */
 		if (lowest_outer_join != NULL)
 		{
@@ -1565,6 +1623,8 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 		 * such refs to be wrapped in PlaceHolderVars, even when they're below
 		 * the nearest outer join?	But it's a pretty hokey usage, so not
 		 * clear this is worth sweating over.)
+		 * 
+		 * 如果子查询的投影中包含了上层外连接的列属性，子查询也不能提升
 		 */
 		if (lowest_outer_join != NULL)
 		{
@@ -1582,6 +1642,8 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 	 * leading to surprising results.  (Note: the PlaceHolderVar mechanism
 	 * doesn't quite guarantee single evaluation; else we could pull up anyway
 	 * and just wrap such items in PlaceHolderVars ...)
+	 * 
+	 * 如果有易失性函数也不能提升
 	 */
 	if (contain_volatile_functions((Node *) subquery->targetList))
 		return false;

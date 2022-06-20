@@ -8,7 +8,7 @@
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/lock.h
- *
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124641464
  *-------------------------------------------------------------------------
  */
 #ifndef LOCK_H_
@@ -22,7 +22,21 @@
 #include "storage/backendid.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
-
+/*
+ * pg中的锁可以分为3个层次：
+ * 
+ * 自旋锁（Spin Lock）：是一种和硬件结合的互斥锁，借用了硬件提供的原子操作的原语来对一
+ *   些共享变量进行封锁，通常适用于临界区比较小的情况。特点是：封锁时间很短、无死锁检测
+ *   机制和等待队列、事务结束时不会自动释放SpinLock。
+ * 
+ * 轻量锁（Lightweight Lock）：负责保护共享内存中的数据结构，有共享和排他两种模式，
+ *   类似Oracle中的latch。特点是：封锁时间较短、无死锁检测机制、有等待队列、事务结
+ *   束时会自动释放。
+ * 
+ * 常规锁（Regular Lock）：就是通常说的对数据库对象的锁。按照锁粒度，可以分为表锁、
+ *   页锁、行锁等；按照等级，pg锁一共有8个等级。特点是：封锁时间可以很长、有死锁检
+ *   测机制和等待队列、事务结束时会自动释放。
+ * /
 
 /* struct PGPROC is declared in proc.h, but must forward-reference it */
 typedef struct PGPROC PGPROC;
@@ -59,6 +73,12 @@ extern bool Debug_deadlocks;
  * We deliberately refrain from using the struct within PGPROC, to prevent
  * coding errors from trying to use struct assignment with it; instead use
  * GET_VXID_FROM_PGPROC().
+ * 
+ * 执行dml操作时，才会为事务分配事务id。不过，即使没有事务id，事务也会用一个虚拟
+ * 事务id来代表自己.
+ * 
+ * 虚拟事务id由两部分组成：backendId（后台进程id，会话独有）+ 
+ *                     localTransactionId（进程维护的本地事务id）
  */
 typedef struct
 {
@@ -107,10 +127,27 @@ typedef struct
  * trace_flag -- pointer to GUC trace flag for this lock method.  (The
  * GUC variable is not constant, but we use "const" here to denote that
  * it can't be changed through this reference.)
+ * 
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124773243
+ * 
+ * 如果要对一个表进行操作，通常会通过 heap_open 打开这个表，并在打开时指定需要的锁模式。
+ * 之后会有一系列函数将锁模式传递下去，最终通过 LockRelationOid 函数将表的 Oid 和
+ * lockmode 联系在一起。如下:
+ * # define heap_open(r,l)
+ * Relation table_open(Oid relationId, LOCKMODE lockmode)
+ * Relation relation_open(Oid relationId, LOCKMODE lockmode)
+ * void LockRelationOid(Oid relid, LOCKMODE lockmode)
  */
 typedef struct LockMethodData
 {
+	/* 锁的模式数量 */
 	int			numLockModes;
+	/* 标志冲突的（二维）数组，mode i 和 mode j 冲突则 
+	 * conflictTab [i] 的第 j 位 = 1，
+	 * conflictTab[0]未使用
+	 * 
+	 * 由于 LOCKMASK 是个位图，所以 conflictTab 可以认为是个二维数组
+	 */
 	const LOCKMASK *conflictTab;
 	const char *const *lockModeNames;
 	const bool *trace_flag;
@@ -121,10 +158,12 @@ typedef const LockMethodData *LockMethod;
 /*
  * Lock methods are identified by LOCKMETHODID.  (Despite the declaration as
  * uint16, we are constrained to 256 lockmethods by the layout of LOCKTAG.)
+ * Lock methods的id，由于 LOCKTAG 对应字段为8位，所以最多指定256个
  */
 typedef uint16 LOCKMETHODID;
 
 /* These identify the known lock methods */
+/* 两个预定义的lock methods */
 #define DEFAULT_LOCKMETHOD	1
 #define USER_LOCKMETHOD		2
 
@@ -137,18 +176,25 @@ typedef uint16 LOCKMETHODID;
  */
 typedef enum LockTagType
 {
+	/* 表锁 */
 	LOCKTAG_RELATION,			/* whole relation */
 	/* ID info for a relation is DB OID + REL OID; DB OID = 0 if shared */
+	/* 对表进行extend时加锁 */
 	LOCKTAG_RELATION_EXTEND,	/* the right to extend a relation */
 	/* same ID info as RELATION */
+	/* 页锁 */
 	LOCKTAG_PAGE,				/* one page of a relation */
 	/* ID info for a page is RELATION info + BlockNumber */
+	/* 行锁 */
 	LOCKTAG_TUPLE,				/* one physical tuple */
 	/* ID info for a tuple is PAGE info + OffsetNumber */
+	/* 事务锁，在分配事务 id 时对这个事务 id 加锁，由于行并发更新时做事务等待 */
 	LOCKTAG_TRANSACTION,		/* transaction (for waiting for xact done) */
 	/* ID info for a transaction is its TransactionId */
+	/* 虚拟事务id */
 	LOCKTAG_VIRTUALTRANSACTION, /* virtual transaction (ditto) */
 	/* ID info for a virtual transaction is its VirtualTransactionId */
+	/* upsert语句中需要等待confirm的行加锁 */
 	LOCKTAG_SPECULATIVE_TOKEN,	/* speculative insertion Xid and token */
 	/* ID info for a transaction is its TransactionId */
 	LOCKTAG_OBJECT,				/* non-relation database object */
@@ -174,6 +220,9 @@ extern const char *const LockTagTypeNames[];
  *
  * We include lockmethodid in the locktag so that a single hash table in
  * shared memory can store locks of different lockmethods.
+ * 
+ * 常规锁不仅可以对表加锁，也可以对各类对象加锁。LOCKTAG 结构体的成员变量没有特定的
+ * 含义，完全取决于具体类型
  */
 // LOCKTAG 结构体中的成员变量没有特定的含义，它们的含义完全取决于使用者
 typedef struct LOCKTAG

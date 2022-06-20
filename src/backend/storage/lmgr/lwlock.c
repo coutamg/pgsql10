@@ -354,7 +354,7 @@ LWLockShmemSize(void)
 {
 	Size		size;
 	int			i;
-	int			numLocks = NUM_FIXED_LWLOCKS;
+	int			numLocks = NUM_FIXED_LWLOCKS;/* 206 */
 
 	numLocks += NumLWLocksByNamedTranches();
 
@@ -380,6 +380,9 @@ LWLockShmemSize(void)
 /*
  * Allocate shmem space for the main LWLock array and all tranches and
  * initialize it.  We also register all the LWLock tranches here.
+ * 
+ * 无论 Individual LWLocks 还是 Builtin Tranches，它们都被保存在共享内存中，
+ * 只是保存的位置和方式略有不同
  */
 void
 CreateLWLocks(void)
@@ -398,6 +401,7 @@ CreateLWLocks(void)
 		char	   *ptr;
 
 		/* Allocate space */
+		/* 共享内存中分配空间 */
 		ptr = (char *) ShmemAlloc(spaceLocks);
 
 		/* Leave room for dynamic allocation of tranches */
@@ -517,6 +521,7 @@ RegisterLWLockTranches(void)
 	LWLockRegisterTranche(LWTRANCHE_TBM, "tbm");
 
 	/* Register named tranches. */
+	/* 初始化 NamedLWLockTrancheRequests 个轻量锁 */
 	for (i = 0; i < NamedLWLockTrancheRequests; i++)
 		LWLockRegisterTranche(NamedLWLockTrancheArray[i].trancheId,
 							  NamedLWLockTrancheArray[i].trancheName);
@@ -541,7 +546,7 @@ InitLWLockAccess(void)
  * the base lock address returned by this API.  This can be used for
  * tranches that are requested by using RequestNamedLWLockTranche() API.
  * 
- * 根据TrancheName来获得对应的轻量锁。每个Tranche都有自己唯一的ID，也在全局范围内有
+ * 根据 TrancheName 来获得对应的轻量锁。每个Tranche都有自己唯一的ID，也在全局范围内有
  * 一个唯一的名字，也就是说Tranche ID和Tranche Name是一一对应的关系
  */
 LWLockPadded *
@@ -632,7 +637,18 @@ LWLockRegisterTranche(int tranche_id, char *tranche_name)
  * it a no-op, so that libraries containing such calls can be reloaded if
  * needed.)
  * 
- * 负责注册Tranche的名字及自己所需的轻量锁的数量
+ * 只有在通过 shared_preload_libraries 加载到 postmaster 的库的 _PG_init 钩子调
+ * 用扩展时才有用。一旦分配了共享内存，调用将被忽略。(我们可以引发错误，但最好将其设为
+ * no-op，这样包含此类调用的库可以在需要时重新加载。)
+ * 
+ * 负责注册 Tranche 的名字及自己所需的轻量锁的数量
+ * 在 _PG_init -> RequestNamedLWLockTranche
+ * 
+ * 主要是方便用户在 Extension 模块中使用轻量锁
+ * 
+ * 参考 https://weread.qq.com/web/reader/6c0329907263ff646c07cd0k1f032c402131f0e3dad99f3
+ * 
+ * 具体参考 轻量锁模块的两种扩展方法.png
  */
 void
 RequestNamedLWLockTranche(const char *tranche_name, int num_lwlocks)

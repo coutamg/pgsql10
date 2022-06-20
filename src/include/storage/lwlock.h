@@ -28,14 +28,17 @@ struct PGPROC;
  * Code outside of lwlock.c should not manipulate the contents of this
  * structure directly, but we have to declare it here to allow LWLocks to be
  * incorporated into other data structures.
- * lwlock.c外的代码不应直接操作这个结构的内容,
+ * lwlock.c 外的代码不应直接操作这个结构的内容,
  * 但我们必须声明该结构体以便将LWLocks合并到其他数据结构中。
  * 自旋锁和轻量锁属于系统锁，它们主要用来保护数据库系统的一些变量。
  * 常规锁参考 lockdefs.h 常规锁则属于事务锁，主要用来封锁各种数据库对象，
  * 如表、页面、元组等
+ * 
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124641464
  */
 typedef struct LWLock
 {
+	/* tranche 其实就是 lwlocknames.txt 中的那些数字，参考 InitializeLWLocks */
 	uint16		tranche;		/* tranche ID */
 	//独占/非独占locker的状态，保存轻量锁的状态
 	/* 低24位用来作为共享锁的计数区，因为共享锁之间是相容的，因此可以有多个申请者同时持
@@ -44,7 +47,7 @@ typedef struct LWLock
 	 * 要1位就够了. 参考 lwlock-state.png
 	 */
 	pg_atomic_uint32 state;		/* state of exclusive/nonexclusive lockers */
-	//正在等待的PGPROCs链表，轻量锁的等待着链表
+	//正在等待的 PGPROCs 链表，轻量锁的等待着链表
 	proclist_head waiters;		/* list of waiting PGPROCs */
 #ifdef LOCK_DEBUG
     //waiters的数量
@@ -101,6 +104,25 @@ typedef union LWLockMinimallyPadded
 	char		pad[LWLOCK_MINIMAL_SIZE];
 } LWLockMinimallyPadded;
 
+/* 轻量锁负责保护共享内存中的数据结构，它正式的名字叫做 Individual LWLocks
+ * pg 中的轻量锁类型定义在 lwlocknames.h 文件中（这个文件是在编译时由
+ * lwlocknames.txt 生成的）
+ * Individual LWLocks 中，每个 LWLock 都对应一个 Tranche ID，它具有全局
+ * 唯一性
+ * 
+ * Individual LWLocks 被保存在 MainLWLockArray 数组中 
+ * 每种Individual LWLocks都有自己固定要保护的对象，使用方式如下（shmem.c 文件
+ * ShmemInitStruct函数）
+ * 
+ * LWLockAcquire(ShmemIndexLock, LW_EXCLUSIVE);
+ * LWLockRelease(ShmemIndexLock);
+ * 
+ * 分配内存参考 CreateLWLocks, 轻量级锁都是在共享内存中分配的
+ * 初始化参考 InitializeLWLocks
+ * 
+ * MainLWLockArray 数组中的前 (NUM_INDIVIDUAL_LWLOCKS- 1) 个都是
+ * Individual LWLocks
+ */
 extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
 extern char *MainLWLockNames[];
 
@@ -128,18 +150,24 @@ extern PGDLLIMPORT int NamedLWLockTrancheRequests;
 
 /* Number of partitions the shared lock tables are divided into */
 #define LOG2_NUM_LOCK_PARTITIONS  4
+/* 16 = 1 << 4 */
 #define NUM_LOCK_PARTITIONS  (1 << LOG2_NUM_LOCK_PARTITIONS)
 
 /* Number of partitions the shared predicate lock tables are divided into */
 #define LOG2_NUM_PREDICATELOCK_PARTITIONS  4
+/* 16 = 1 << 4 */
 #define NUM_PREDICATELOCK_PARTITIONS  (1 << LOG2_NUM_PREDICATELOCK_PARTITIONS)
 
 /* Offsets for various chunks of preallocated lwlocks. */
+/* NUM_INDIVIDUAL_LWLOCKS = 46 */
 #define BUFFER_MAPPING_LWLOCK_OFFSET	NUM_INDIVIDUAL_LWLOCKS
+/* 174 = 46 + 128 */
 #define LOCK_MANAGER_LWLOCK_OFFSET		\
 	(BUFFER_MAPPING_LWLOCK_OFFSET + NUM_BUFFER_PARTITIONS)
+/* 190 = 174 + 16 */
 #define PREDICATELOCK_MANAGER_LWLOCK_OFFSET \
 	(LOCK_MANAGER_LWLOCK_OFFSET + NUM_LOCK_PARTITIONS)
+/* 206 = 190 + 16 */
 #define NUM_FIXED_LWLOCKS \
 	(PREDICATELOCK_MANAGER_LWLOCK_OFFSET + NUM_PREDICATELOCK_PARTITIONS)
 
@@ -206,11 +234,19 @@ extern void LWLockInitialize(LWLock *lock, int tranche_id);
  * we reserve additional tranche IDs for builtin tranches not included in
  * the set of individual LWLocks.  A call to LWLockNewTrancheId will never
  * return a value less than LWTRANCHE_FIRST_USER_DEFINED.
- * 每个Builtin Tranche可能对应多个LWLock，它代表的是一组LWLocks，这组LWLocks虽然
- * 各自封锁各自的内容，但是它们的功能相同
+ * 
+ * 每个 Builtin Tranche 可能对应多个 LWLock，它代表的是一组 LWLocks，这组 LWLocks
+ * 虽然各自封锁各自的内容，但是它们的功能相同
+ * 
+ * 每个 builtin tranches 代表一组 LWLocks，这组 LWLocks 虽然封锁各自的内容，但它们
+ * 的功能相同。
+ * 这些 builtin tranches 对应的一部分被保存在 MainLWLockArray 数组中，另一部分在
+ * 使用它们的结构体中。
+ * 参考 RegisterLWLockTranches
  */
 typedef enum BuiltinTrancheIds
 {
+	/* 这里接着 lwlocknames.h 的最后一行 */
 	LWTRANCHE_CLOG_BUFFERS = NUM_INDIVIDUAL_LWLOCKS,
 	LWTRANCHE_COMMITTS_BUFFERS,
 	LWTRANCHE_SUBTRANS_BUFFERS,
@@ -231,6 +267,8 @@ typedef enum BuiltinTrancheIds
 	LWTRANCHE_TBM,
 	LWTRANCHE_FIRST_USER_DEFINED
 }			BuiltinTrancheIds;
+
+/**/
 
 /*
  * Prior to PostgreSQL 9.4, we used an enum type called LWLockId to refer

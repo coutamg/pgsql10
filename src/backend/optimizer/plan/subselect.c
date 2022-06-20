@@ -1298,12 +1298,12 @@ SS_process_ctes(PlannerInfo *root)
  * the JoinExpr's rarg.
  */
 /*
- ANY 子连接提升的一个感性原则：
-	ANY 类型 的非相关子连接可以提升 （ 仍然需要是 “ 简单” 的子连接〉
-	并且可以通过物化的方式进行优化。
-
-	ANY 类 型的相关子连接 目前还不能提升
-*/
+ * ANY 子连接提升的一个感性原则：
+ *	ANY 类型 的非相关子连接可以提升 （ 仍然需要是 “ 简单” 的子连接〉
+ *	并且可以通过物化的方式进行优化。
+ *
+ *	ANY 类 型的相关子连接 目前还不能提升
+ */
 JoinExpr * // 返回 Semi Join类型 的JoinExpr
 convert_ANY_sublink_to_join(PlannerInfo *root, // 查询优化模块的上下文信息结构体
 							SubLink *sublink,// 要处理的子连接信息
@@ -1383,9 +1383,9 @@ convert_ANY_sublink_to_join(PlannerInfo *root, // 查询优化模块的上下文
 	 SELECT sname FROM STUDENT WHERE sno > ANY (SELECT sno FROM SCORE）
 	 提升前的查询树内存结构图见 select_with_any.png
 	 SubLink结构中变量情况
-	   subLinkType: ANY谓词产生的 ANY SUBLINK
+	   subLinkType: ANY 谓词产生的 ANY SUBLINK
        subLinkld: 语句中只有－个子连接，编号为 1
-	   testexpr: 操作符表达式，左操作数是Var，代表 STUDENT.sno 操作符是“>”， 右操
+	   testexpr: 操作符表达式，左操作数是 Var，代表 STUDENT.sno 操作符是“>”， 右操
 				 作数类型是Param，代表 SCORE.sno，也就是子连接中的投影列(targetlist)
 	   operName: 操作符是“>”
 	   subselect: 子连接中的子句生成的查询树(Query), 这里是SQL语句中的
@@ -1464,8 +1464,14 @@ convert_ANY_sublink_to_join(PlannerInfo *root, // 查询优化模块的上下文
  * so we need an additional input parameter "under_not".
  */
 /*
- EXISTS 类型的子连接和 ANY 类型的子连接不同，它没有左操作数，因此 EXISTS 类型的 子连接能
- 够提升的条件与 ANY 类型的子连接也不同。
+ * EXISTS 类型的子连接和 ANY 类型的子连接不同，它没有左操作数，因此 EXISTS 类型的 子连接能
+ * 够提升的条件与 ANY 类型的子连接也不同。
+ * 
+ * 在 EXISTS 类型的子连接提升的过程中，最主要的是对 SubLink->subselect 的处理，一方面 
+ * SubLink->subselect->rtable 将被提升到上层，和上层表形成 SemiJoin 或 AntiJoin 关系，
+ * 另一方面 SubLink->subselect->FrornExpr->quals 也会被提升到上层变成约束条件，在将子连
+ * 接 的范围表和 约束条件提升后，还需要调整 SubLink->subselect 查询树中的 Var 变量中的 vamo
+ *  和 varlevelsup,
 */
 JoinExpr * // 返回 Semi Join或Anti Join类型的JoinExpr
 convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上下文信息结构体 
@@ -1491,6 +1497,7 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上�
 	 * call.)  Note that convert_ANY_sublink_to_join doesn't have to reject
 	 * this case, since it just produces a subquery RTE that doesn't have to
 	 * get flattened into the parent query.
+	 * EXISTS 类型的子连接的子句中如果包含通用表达式(CTE, WITH 子句)，子连接不能提升
 	 */
 	if (subselect->cteList)
 		return NULL;
@@ -1506,12 +1513,22 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上�
 	 * being used in EXISTS().  If we aren't able to get rid of its
 	 * targetlist, we have to fail, because the pullup operation leaves us
 	 * with noplace to evaluate the targetlist.
+	 * 
+	 * 通过 simplify_EXISTS_query 函数来判断 EXISTS_SUBLINK 类型的子连接的子句是
+	 * 否 “简单”，如果子句中包含集合操作、聚集操作、 HAVING 子句等，子连接不能提升，
+	 *  否则对 SubLink 中的子句进行简化。
 	 */
 	if (!simplify_EXISTS_query(root, subselect))
 		return NULL;
 
 	/*
 	 * The subquery must have a nonempty jointree, else we won't have a join.
+	 * EXISTS 类型的子连接的子句中，如果约束条件（ WHERE/ON ）中没有包含上层的列属
+	 * 性（ Var ），这种情况无须将子连接提升为 JOIN，通常直接对子连接单独生成子计划求
+	 * 解代价更低。
+	 * 
+	 * 例如有 SQL 语句 SELECT * FROM STUDENT WHERE EXISTS (SELECT *FROM SCORE），
+	 * 这个子连接中没有引用父查询的列属性，因此无须提升。
 	 */
 	if (subselect->jointree->fromlist == NIL)
 		return NULL;
@@ -1520,6 +1537,9 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上�
 	 * Separate out the WHERE clause.  (We could theoretically also remove
 	 * top-level plain JOIN/ON clauses, but it's probably not worth the
 	 * trouble.)
+	 * 子连接的 where 条件置空，方便 contain_vars_of_level 进行额外检查
+	 * 将 SubLink->subselect 子查词中的 FrornExpr->quals 独立保存起来，形成 
+	 * whereClause,这部分将来要做约束条件，然后将 FromExpr->quals 设置为 NULL
 	 */
 	whereClause = subselect->jointree->quals;
 	subselect->jointree->quals = NULL;
@@ -1527,6 +1547,10 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上�
 	/*
 	 * The rest of the sub-select must not refer to any Vars of the parent
 	 * query.  (Vars of higher levels should be okay, though.)
+	 * 
+	 * EXISTS 类型的子连接的子句中如果除了约束条件之外的其他表达式如果引用了上层父
+	 * 查询的列属性（ Var ），子连接不能提升。同时，子连接的约束条件中则必须包含上层
+	 * 父查询的列属性，否则不能提升。
 	 */
 	if (contain_vars_of_level((Node *) subselect, 1))
 		return NULL;
@@ -1540,6 +1564,8 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上�
 
 	/*
 	 * We don't risk optimizing if the WHERE clause is volatile, either.
+	 * EXISTS 类型的子连接的约束条件（ Whereclause ）中如果含有易失性函数，
+	 * 子连接不能提升。
 	 */
 	if (contain_volatile_functions(whereClause))
 		return NULL;
@@ -1558,6 +1584,17 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上�
 	 * the rtable to our own and use the FromExpr in our jointree. But first,
 	 * adjust all level-zero varnos in the subquery to account for the rtable
 	 * merger.
+	 * 
+	 * 对 SubLink->subselect 和 whereClause 分别处理，目前它们中的 Var 变量的 varno 
+	 * 是根据 SubLink->subselect->rtable 确定的，如果这些 Var 被提升到上层，它们的 
+	 * varno 就要做出调整，由于要将子连接中的范围表追加到上层父查询的范围表的链表中
+	 * (rtable 链表），因此子连接中的范围表的 rtindex 需要增加上层父查询的范围表链表的
+	 * 长度，同时对 SubLink->subselect 中的 RangeTableRef 的 rtindex 也要按照新
+	 * 的 rtindex 做调整。
+	 * 
+	 * 对 Sublink->subselect 和 whereClause 分别处理 ，如果引用了上层表的列属性，
+	 * 那么这个 Var 的 varlevelup 的值是 1 ， 表示它是上一层的某个表的列属性，如果子
+	 * 连接被提升， 这个 Var 的 varlevelsup 应该做出调整，修改成 0.
 	 */
 	rtoffset = list_length(parse->rtable);
 	OffsetVarNodes((Node *) subselect, rtoffset, 0);
@@ -1595,10 +1632,14 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上�
 		return NULL;
 
 	/* Now we can attach the modified subquery rtable to the parent */
+	/* 将子连接 的 rtable 附加到上层父查询的 rtable */
 	parse->rtable = list_concat(parse->rtable, subselect->rtable);
 
 	/*
 	 * And finally, build the JoinExpr node.
+	 * 创建新的 jointree， 用 SubLink->subselect 中的 jointree 作为右参数 (rarg)，
+	 * 用 whereClause 作为新的 quals
+	 * 子查询的状态变化参考 subselect_exist.png
 	 */
 	result = makeNode(JoinExpr);
 	result->jointype = under_not ? JOIN_ANTI : JOIN_SEMI;
@@ -1614,6 +1655,18 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, // 查询优化模块 的上�
 	result->alias = NULL;
 	result->rtindex = 0;		/* we don't need an RTE for it */
 
+	/*
+	 * SELECT sno FROM STUDENT WHERE EXISTS 
+	 *	(SELECT sno FROM SCORE WHERE sno > STUDENT.sno)
+	 * 
+	 * 转换成如下的 sql
+	 * 
+	 * SELECT sno FROM STUDENT SEMI JOIN SCORE WHERE 
+	 *   SCORE.sno > STUDENT.sno
+	 * 
+	 * 不 同于 ANY 类型的子连接，EXISTS 类型的子连接会彻底提升为表与表直接连
+	 * 接的方式，而不是先转换成子查询
+	 */
 	return result;
 }
 
@@ -1644,16 +1697,16 @@ simplify_EXISTS_query(PlannerInfo *root, Query *query)
 	 * clause, but that traditionally is used as an optimization fence, so we
 	 * don't.)
 	 */
-	if (query->commandType != CMD_SELECT ||
-		query->setOperations ||
-		query->hasAggs ||
-		query->groupingSets ||
-		query->hasWindowFuncs ||
-		query->hasTargetSRFs ||
-		query->hasModifyingCTE ||
-		query->havingQual ||
-		query->limitOffset ||
-		query->rowMarks)
+	if (query->commandType != CMD_SELECT || /* 必须是 SELECT 子句 */
+		query->setOperations ||				/* 子句中不能带有集合操作 */
+		query->hasAggs ||					/* 子句中不能带有聚集函数 */
+		query->groupingSets ||				/* 不能有 group by grouping sets 这样的子句 */
+		query->hasWindowFuncs ||			/* 不能有窗口函数 */
+		query->hasTargetSRFs ||				/* 不能有 generate series 这样的函数 */
+		query->hasModifyingCTE ||			/* 不能有带有 UPDATE、 INSERT 语句的通用表达式 */
+		query->havingQual ||				/* 不能有 having 子句 */
+		query->limitOffset ||				/* 不能带有 limit 子句 */
+		query->rowMarks)					/* 不能是 SELECT ...for update 子句 */
 		return false;
 
 	/*
@@ -1662,6 +1715,9 @@ simplify_EXISTS_query(PlannerInfo *root, Query *query)
 	 * because people accustomed to certain other DBMSes may be in the habit
 	 * of writing EXISTS(SELECT ... LIMIT 1) as an optimization.  If there's a
 	 * LIMIT with anything else as argument, though, we can't simplify.
+	 * 
+	 * 如果通过了上面的检查，那么还可以尝试简化这个子连接, 由于 EXISTS 类型的子连接具有找到
+	 * 一个即可的特点, 因此 LIMIT 子句如果只是对结果进行限制，这个子句是可以消除的
 	 */
 	if (query->limitCount)
 	{
@@ -1696,6 +1752,8 @@ simplify_EXISTS_query(PlannerInfo *root, Query *query)
 	 * change a nonzero-rows result to zero rows or vice versa.  (Furthermore,
 	 * since our parsetree representation of these clauses depends on the
 	 * targetlist, we'd better throw them away if we drop the targetlist.)
+	 * 
+	 * 下面这些也不会影响 EXISTS 类型的子连接的结果，也可以简化掉
 	 */
 	query->targetList = NIL;
 	query->groupClause = NIL;

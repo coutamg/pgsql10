@@ -30,7 +30,10 @@
 /* Number of OIDs to prefetch (preallocate) per XLOG write */
 #define VAR_OID_PREFETCH		8192
 
-/* pointer to "variable cache" in shared memory (set up by shmem.c) */
+/* pointer to "variable cache" in shared memory (set up by shmem.c) 
+ * VariableCache 的定义在 VariableCacheData 结构体，其中包括事务 id 的计数器，
+ * 每次获取事务 id 后会对计数器+1
+ */
 VariableCache ShmemVariableCache = NULL;
 
 
@@ -156,6 +159,7 @@ GetNewTransactionId(bool isSubXact)
 
 		/* Re-acquire lock and start over */
 		LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
+		/* xid 的来源 */
 		xid = ShmemVariableCache->nextXid;
 	}
 
@@ -222,9 +226,10 @@ GetNewTransactionId(bool isSubXact)
 		volatile PGPROC *myproc = MyProc;
 		volatile PGXACT *mypgxact = MyPgXact;
 
+		/* 如果非子事务，需要记录到当前会话（PGROC）的事务结构体中 */
 		if (!isSubXact)
 			mypgxact->xid = xid;
-		else
+		else /* 如果是子事务，需要记录到ProcGlobal的子事务id数组中 */
 		{
 			int			nxids = mypgxact->nxids;
 
