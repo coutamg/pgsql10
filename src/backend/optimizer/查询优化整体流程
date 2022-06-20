@@ -3,7 +3,7 @@ planner(){ // 第1层
 	standard_planner(){ // 第2层
 		subquery_planner(){ // 第3层
 			pull_up_sublinks(); // 上拉子链接
-			pull_up_subqueries); // 上拉子查询
+			pull_up_subqueries(); // 上拉子查询
 			preprocess_expression(); /* 标准化表达式：把 WHERE 子句内容“标准化”为便于使用的形式，包括拉
 									  *	平 AND/OR; 找出子句中 OR 不同分支下重复的谓词。如果约東条件有
 									  * 子链接、子查询，则递归调用 subauery_planner() 处理子链接、子查询
