@@ -163,7 +163,7 @@ typedef const LockMethodData *LockMethod;
 typedef uint16 LOCKMETHODID;
 
 /* These identify the known lock methods */
-/* 两个预定义的lock methods */
+/* 两个预定义的 lock methods */
 #define DEFAULT_LOCKMETHOD	1
 #define USER_LOCKMETHOD		2
 
@@ -366,6 +366,10 @@ nGranted的的范围为[0,nRequested],对于每一个granted[i]范围为[0,reque
 如果所有请求变为0,那么LOCK对象不再需要,会通过free释放.
 */
 // 加锁函数 LockAcquire
+/*
+ * 主锁表（LOCK结构体）：保存一个锁对象所有相关信息
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124773243
+ */
 typedef struct LOCK
 {
 	/* hash key */
@@ -426,6 +430,10 @@ typedef struct LOCK
  * into these lists as soon as it is created, even if no lock has yet been
  * granted.  A PGPROC that is waiting for a lock to be granted will also be
  * linked into the lock's waitProcs queue.
+ * 
+ * 每个 PROCLOCK 对象被链接到关联的 LOCK 对象和所属的 PGPROC 对象的列表中。注意，一旦
+ * 创建 PROCLOCK，它就会被输入到这些列表中，即使还没有授予锁。等待授予锁的 PGPROC 也将
+ * 被链接到锁的 waitProcs 队列中
  */
 /*
   进程锁表被用来保存当前进程（会话）的事务锁的状态，它保存的是PROCLOCK结构体，
@@ -438,6 +446,10 @@ typedef struct PROCLOCKTAG
 	PGPROC	   *myProc;			/* link to PGPROC of owning backend */
 } PROCLOCKTAG;
 
+/*
+ * 进程锁表（PROCLOCK结构体）：保存一个锁对象中与当前会话（进程）相关的信息
+ * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124773243
+ */
 typedef struct PROCLOCK
 {
 	/* tag PROCLOCK的唯一 ID*/
@@ -500,25 +512,41 @@ typedef struct LOCALLOCKOWNER
 	int64		nLocks;			/* # of times held by this owner */
 } LOCALLOCKOWNER;
 
+/* https://blog.csdn.net/Hehuyi_In/article/details/124773243 
+ * 本地锁表(LOCALLOCK 结构体)：对于重复申请的锁进行计数，避免频繁访问
+ * 		主锁表和进程锁表，相当于一层缓存
+ * 
+ * 快速路径（fast path）：对弱锁的访问保存到本进程，避免频繁访问主锁表(LOCK)
+ * 和进程锁表(PROCLOCK)
+ * 
+ * 每个会话都保存了一个本地锁表 —— 当事务重复在同一个对象上申请同类型锁时，
+ * 无须做冲突检测，只要将这个锁记录在本地即可，避免频繁访问主锁表和进程锁表。
+ * 
+ * 本地锁表的名字是 LockMethodLocalHash, 这是个 hash 表。
+ * 本地锁表的判断和获取在 LockAcquireExtended 函数
+ */
 typedef struct LOCALLOCK
 {
 	/* tag */
+	/* 本地锁唯一id：LOCKTAG + LOCKMODE hash key */
 	LOCALLOCKTAG tag;			/* unique identifier of locallock entry */
 
 	/* data  */
-	// 锁对象
+	/* 关联主锁表对象 */
 	LOCK	   *lock;			/* associated LOCK object, if any */
-	// 锁对应的进程对象
+	/* 锁对应的进程对象, 关联进程锁表对象 */
 	PROCLOCK   *proclock;		/* associated PROCLOCK object, if any */
-	// 锁 tag 的 hash 值 
+	/* LOCKTAG 的 hash 值 */
 	uint32		hashcode;		/* copy of LOCKTAG's hash value */
-	// 本地有多少次持有该锁，类似引用计数
+	/* 本地有多少次持有该锁，类似引用计数, 本地持有该锁的次数（类似计数器） */
 	int64		nLocks;			/* total number of times lock is held */
-	// 相关的 ResourceOwners 数量
+	/* 相关的 ResourceOwners 数量, lockOwners 数组的实际大小 */
 	int			numLockOwners;	/* # of relevant ResourceOwners */
+	/* ResourceOwners数组的最大长度 */
 	int			maxLockOwners;	/* allocated size of array */
 	// 锁 Fast Path 需要的标记，是否持有了强锁
 	bool		holdsStrongLockCount;	/* bumped FastPathStrongRelationLocks */
+	/* 长度可以动态变化的数组 */
 	LOCALLOCKOWNER *lockOwners; /* dynamically resizable array */
 } LOCALLOCK;
 

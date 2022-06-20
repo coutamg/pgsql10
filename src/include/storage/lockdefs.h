@@ -34,13 +34,24 @@ typedef int LOCKMODE;
 
 // 常规锁模式参考 lockdefs-1.png, 相容矩阵参考 lockdefs-2.png
 /* NoLock is not a lock mode, but a flag value meaning "don't get a lock" */
+/* 根据兼容性表，彼此相容的3个锁（1-3级，AccessShareLock、RowShareLock、
+ * RowExclusiveLock）是弱锁，4级锁 ShareUpdateExclusiveLock 比较特殊，
+ * 既不是强锁也不是弱锁，5-8 级的 4 个则是强锁
+ * 
+ * 弱锁只保存在当前会话，从而避免频繁访问共享内存的主锁表，提高数据库的性能。
+ * 虽然判断是否有强锁也需要访问共享内存中的 FastPathStrongRelationLocks，
+ * 但这种访问粒度比较小
+ */
 #define NoLock					0
 
+/*========= 弱锁 ====================*/
 #define AccessShareLock			1	/* SELECT */
 #define RowShareLock			2	/* SELECT FOR UPDATE/FOR SHARE */
 #define RowExclusiveLock		3	/* INSERT, UPDATE, DELETE */
+/*========== 不是强锁也不是弱锁 =======*/
 #define ShareUpdateExclusiveLock 4	/* VACUUM (non-FULL),ANALYZE, CREATE INDEX
 									 * CONCURRENTLY */
+/*========== 强锁 ===================*/
 #define ShareLock				5	/* CREATE INDEX (WITHOUT CONCURRENTLY) */
 #define ShareRowExclusiveLock	6	/* like EXCLUSIVE MODE, but allows ROW
 									 * SHARE */

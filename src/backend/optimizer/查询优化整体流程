@@ -1,0 +1,80 @@
+
+planner(){ // 第1层
+	standard_planner(){ // 第2层
+		subquery_planner(){ // 第3层
+			pull_up_sublinks(); // 上拉子链接
+			pull_up_subqueries); // 上拉子查询
+			preprocess_expression(); /* 标准化表达式：把 WHERE 子句内容“标准化”为便于使用的形式，包括拉
+									  *	平 AND/OR; 找出子句中 OR 不同分支下重复的谓词。如果约東条件有
+									  * 子链接、子查询，则递归调用 subauery_planner() 处理子链接、子查询
+									  */
+			reduce_outer_joins(); // 消除外连接
+			grouping_planner() { // 第4层，生成查询执行计划
+				query_planner() { // 第5层，生成 2 个候选的最优路径
+
+// 以上部分的代码，主要完成逻辑优化的工作。以下开始物理查询优化的工作
+
+					make_one_rel() { // 第6层，生成新关系
+						set_base_rel_pathlist(); // 找出所有访问基表的方法，包括顺序扫描和索引扫描
+						{ // 第7层
+							set_plain_rel_pathlist()
+							{
+								add_path(rel, create_seascan_path(root, rel, NULL)); // 顺序扫描方式
+								create_index_paths(root, rel); // 索引扫描方式
+								create_tidscan_paths(root, rel): // Tid 扫描方式
+								set_cheapest(rel): // 对单表所有 3 种扫描方式求解最优的扫描方式
+							}
+						} // 第7层结東 set_base_rel_pathlist
+						make_rel_from_joinlist(){ // 第7层
+							/* 决定使用什么查询优化的算法（遗传算法还是动态规划还是用户自定义的算法）生成一
+							 * 棵查询树的所有访问路径，得到最优的路径
+							 */
+
+							/* 如果定义的遗传算法的连接顺序选择，那么采用它；否则，如下 */
+							standard_join_search() { /* 第 8 层，实现动态规划算法，为一个查询找出所有可能的连接路径 */
+
+								/* levels_needed 是要连接的表的个数；第一层是叶子，基本关系；从第二层开始，调用
+								 * join_search_one_level 函数构造多表连接; 每层连接后的关系，调用 set_cheapest 函
+								 * 数求解本层得到的最优的路径
+								 */
+								for (lev = 2; lev <= levels_needed; lev++) 
+								{
+									join_search_one_Jevel() { // 第9层，实现动态规划算法
+										make_rels_by_clause_joins(); /* 存在连接条件，且可连接(无外连接等情况导致两关系不可
+																	  * 做连接)则连接; 会调用 make_join_rel() 
+																	  */
+										make_rels_by_clauseless_joins(); /* 不存在连接条件，则做笛卡儿积连接; 会
+																		  * 调用 make_join_rel()
+																		  */
+										make_join_rel() { /* 第 10 层，查找或创建一个 RelOptinfo 结点，用于表示 2 个关系的
+														    * 连接结果，把 2 个关系的连接路径加入这个 RelOptinfo 结点
+														    */
+											build_join_rel() { // 第 11 层
+												Find or build the join RelOptinfo
+												Consider paths using each rel as both outer and inner 
+												/* 尝试把每个关系作为外关系、作为内关系(一个关系作为一次连接的
+												 * 内关系或外关系对效率有影响）
+												 */
+											} // 第 11 层结束,build_join_rel()
+										} // 第 10 层结束, make_join_rel()
+									} // 第 9 层结束, join_search_one_level()
+									set_cheapest(rel); // 被循环调用，得到每一个关系上的花费最少的路径
+								}
+							} // 第8层结束, standard_join_search()
+						} // 第7层结束, make_rel_from_joinlist()
+					} // 第6层结束, make_one_rel()
+				} /* 第5层结束, query_planner()，返回值是 void,但参数中有2个参数 (cheapest_path, sorted_path) 
+				   * 返回和最优的查询执行计划路径
+				   */
+				optimize_minmax_aggregates(); // 对 min、max 聚集计划优化
+				create_plan(); // 根据求解得到的最优路径，创建（初步的）查询执行计划
+
+				/* 对给 SP 格式语句进行优化，添加相应的计划结点（包括 agg、 group、 distinct、 sort、limit)，
+				 * 生成完整的查询执行计划
+				 */
+
+			} //第4层结束,grouping_planner()
+		} //第3层结東,subquery_planner()
+		set_plan_references();// 一些清理辅助工作
+	} //第2层结東，standard_planner()
+} //第1层结束,planner()
