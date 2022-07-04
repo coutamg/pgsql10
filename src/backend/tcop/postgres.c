@@ -1060,6 +1060,12 @@ exec_simple_query(const char *query_string)
 		/*
 		 * Create unnamed portal to run the query or queries in. If there
 		 * already is one, silently drop it.
+		 * 
+		 * portal 可参考 portal_data.png
+		 * portal 函数调用可参考 potral_stack.png
+		 * 
+		 * 1. 创建一个干净的 Portal, 其中内存上下文, 资源跟踪器, 清理函数等都已经设置
+		 *    好, 但 sourceText, tmts 等字段并没有设置.
 		 */
 		portal = CreatePortal("", true, true);
 		/* Don't display the portal in pg_cursors */
@@ -1069,6 +1075,10 @@ exec_simple_query(const char *query_string)
 		 * We don't have to copy anything into the portal, because everything
 		 * we are passing here is in MessageContext, which will outlive the
 		 * portal anyway.
+		 * 
+		 * 2. 调用函数 PortalDefineQuery 为刚创建的 Portal 设置 sourceText, stmts 等
+		 *    字段,这些字段的值都来自于优化器输出的结果,其中还会将 Portal 的状态设置为
+		 *    PORTAL_DEFINED 表示 Portal 已被定义
 		 */
 		PortalDefineQuery(portal,
 						  NULL,
@@ -1079,6 +1089,21 @@ exec_simple_query(const char *query_string)
 
 		/*
 		 * Start the portal.  No parameters here.
+		 * 所有 Portal 的执行过程都必须依次调用 PortalStart(初始化),
+		 * PortalRun(执行), PortalDrop(清理)三个过程
+		 * 参考 portal_process.png
+		 * 
+		 * 4. 调用函数 PortalStart 对定义好的 Portal 进行初始化,初始化工作主要如下:
+		 *    a 调用 ChoosePortalStrategy 为 Portal 选择策略。
+		 *    b 如果选择的是 PORTAL_ONE_SELECT 策略,调用 CreateQueryDesc 为 Portal 
+		 *       创建查询描述符。
+		 *    c 如果选择的是 PORTAL_ONE_RETURNING 或者 PORTAL_ONE_MOD_WITH 策略,
+		 * 		 为 Portal 创建返回元组的描述符
+		 *    d 对于 PORTAL_UTIL_SELECT 则调用 UtilityTupleDescriptor 为 Portal
+		 * 		 创建查询描述符
+		 * 	  e 对于PORTAL_MULTI_QUERY这里则不做过多操作;
+		 *    f 将 Portal 的状态设置为 PORTAL_READY,表示 Portal 已经初始化好,准备
+		 * 		 开始执行
 		 */
 		PortalStart(portal, NULL, 0, InvalidSnapshot);
 
@@ -1118,6 +1143,8 @@ exec_simple_query(const char *query_string)
 
 		/*
 		 * Run the portal to completion, and then drop it (and the receiver).
+		 * 5. 调用函数 PortalRun 执行 Portal, 该函数将按照 Portal 中选择的策略调用相应
+		 *    的执行部件来执行 Portal
 		 */
 		(void) PortalRun(portal,
 						 FETCH_ALL,
@@ -1129,6 +1156,9 @@ exec_simple_query(const char *query_string)
 
 		(*receiver->rDestroy) (receiver);
 
+		/* 6. 调用函数 PortalDrop 清理 Portal,主要是对 Portal 运行中所占用的资源进行释放,
+		 *    特别是用于缓存结果的资源
+		 */
 		PortalDrop(portal, false);
 
 		if (IsA(parsetree->stmt, TransactionStmt))

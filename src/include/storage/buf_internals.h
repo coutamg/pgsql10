@@ -87,13 +87,38 @@
  *
  * Note: if there's any pad bytes in the struct, INIT_BUFFERTAG will have
  * to be fixed to zero them, since this struct is used as a hash key.
+ * 
+ * 参考 https://blog.csdn.net/fly2nn/article/details/6854316
+ * 
+ * buffer tag 标识缓冲区包含的磁盘块。
+ * 
+ * 注意: BufferTag 数据必须足以决定 block 位置，不需要引用 pg_class 或 pg_tablespace 的内
+ * 容。有可能后端刷新缓冲区甚至不相信关系是可见的(它的 xact 可能已经在创建rel的 xact 之前开始)。
+ * 无论如何，存储管理器必须能够应付。
+ * 
+ * 注意:如果在结构中有任何填充字节，INIT_BUFFERTAG 将必须被修复为零，因为这个结构被用作哈希键。
+ * 
+ * 内外存地址映射:
+ * 	1 缓存对应的内外存的映射关系(buftag)
  */
 typedef struct buftag
 {
+	/* 数据库对象的位置标识 
+	 * 2 数据库、表空间、和对象（主要是表对象）的对应关系，构成了内存和数据库对象的映射
+	 * 是数据和数据库对象映射的重要链条, 赋值参考 GetNewRelFileNode
+	 */
 	RelFileNode rnode;			/* physical relation identifier */
+	/* 可以查看 "relpathbackend" 函数，理解其所起的地址映射作用 */
 	ForkNumber	forkNum;
 	BlockNumber blockNum;		/* blknum relative to begin of reln */
 } BufferTag;
+/* 3. 数据对象和数据的映射关系：pg_class.h
+ * 在 pg_class.h文件中，有一列，信息如下: 
+ *	 int4         relpages; 标识了本行所表示的对象的具体位置（在数据文件中的具体位置）
+ * 
+ * 而 pg_class 系统表，存放了数据库对象（表、视图、序列等）的元信息，本表隶属于具体的数据
+ * 库（即系统表是局部的，每个数据库都有一份；有的系统表是全局的，全系统只有一份如 pg_database
+ */
 
 #define CLEAR_BUFFERTAG(a) \
 ( \
@@ -175,12 +200,45 @@ typedef struct buftag
  * reordering members.  Keeping it below 64 bytes (the most common CPU
  * cache line size) is fairly important for performance.
  */
+/* Buf 的元信息结构, 描述了每一个缓存块的使用情况.
+ * buf 层起着连接物理IO和上层数据访问的桥梁作用，所以，对上对下的重要信息，都在这
+ * 个结构中
+ */
 typedef struct BufferDesc
 {
+	/* 起着连接内存和外存地址映射的作用，通过这个，可以决定缓存块的脏信息写到外存的
+	 * 什么位置；如果是新读入的块，则根据新读入的块的地址给本变量赋值
+	 */
 	BufferTag	tag;			/* ID of page contained in buffer */
+	/* 通过 buf_id 可以在 BufferIOLWLockArray 获得 io_in_progress_lock(
+	 * 其实是 Buffer IO Locks, 不是 slot 中的 io_in_progress_lock ？？？)
+	 * 调用参考 BufferDescriptorGetIOLock 宏。具体调用关系如下：
+	 * UnpinBuffer
+     * WaitIO
+     *        InvalidateBuffer
+     *        StartBufferIO
+     * WaitIO
+     * StartBufferIO // 与缓存相关的一个重要函数，从物理存储往缓存块中加载数据
+     * TerminateBufferIO
+     * AbortBufferIO
+     * InitBufferPool
+	 */
 	int			buf_id;			/* buffer's index number (from 0) */
 
 	/* state of the tag, containing flags, refcount and usagecount */
+	/* 22~31 位, 标识了 buf 的状态 
+	 *  BM_LOCKED				22 buffer header is locked
+	 *  BM_DIRTY				23 data needs writing
+	 *  BM_VALID				24 data is valid
+	 *  BM_TAG_VALID			25 tag is assigned
+	 *  BM_IO_IN_PROGRESS		26 read or write in progress
+	 *  BM_IO_ERROR				27 previous I/O failed
+	 *  BM_JUST_DIRTIED			28 dirtied since write started
+	 *  BM_PIN_COUNT_WAITER		29 have waiter for sole pin
+	 *  BM_CHECKPOINT_NEEDED	30 must write for checkpoint
+	 *  BM_PERMANENT			31 permanent buffer(not unlogged 
+	 * 								or init fork)
+	 */
 	pg_atomic_uint32 state;
 
 	int			wait_backend_pid;	/* backend PID of pin-count waiter */
@@ -188,6 +246,26 @@ typedef struct BufferDesc
 
 	LWLock		content_lock;	/* to lock access to buffer contents */
 } BufferDesc;
+/* buf 的锁:
+ * 1. state
+ *	  加锁: LockBufHdr. 放锁: UnlockBufHdr
+ *	  锁模式: PG的自旋锁 (SpinLock)
+ *	  说明: 对自己（BufferDesc）进行保护, 当有 refcount, usagecount 等需要
+ *	  被改写时，加锁
+ *
+ * 2. BufferDescriptorGetIOLock(buf)
+ *    加锁: LWLockAcquire. 放锁: LWLockRelease
+ * 	  锁模式: LW_SHARED 与 LW_EXCLUSIVE
+ *    说明: 为本层（数据缓冲区）与下层（数据存储层）交换数据提供防止并发错误的机制
+ * 
+ * 3. content_lock
+ * 	  加锁: LockBuffer. 放锁: UnlockBuffers
+ * 	  锁模式: BUFFER_LOCK_SHARE 与 BUFFER_LOCK_EXCLUSIVE
+ *    说明: 对缓冲区进行保护, 当上层（数据访问层）读写缓冲区可能发生冲突时，可以使得读
+ * 		   读并发，读写并发时先读不影响写、写不影响读. 为上层访问缓冲区提供防止并发错
+ * 		   误的机制
+ *
+ */
 
 /*
  * Concurrent access to buffer headers has proven to be more efficient if
@@ -227,6 +305,7 @@ typedef union BufferDescPadded
 #define BufferDescriptorGetContentLock(bdesc) \
 	((LWLock*) (&(bdesc)->content_lock))
 
+/* 共享内存中的 Buffer IO Locks */
 extern PGDLLIMPORT LWLockMinimallyPadded *BufferIOLWLockArray;
 
 /*

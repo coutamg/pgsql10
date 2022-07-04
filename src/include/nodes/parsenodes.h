@@ -104,13 +104,19 @@ typedef uint32 AclMode;			/* a bitmask of privilege bits */
  *	  node --- the Query structure is not used by the executor.
  */
 /*
-	一个 SQL 语句在执行过程中，经过词法分析、语法分析和语义分析之后，会生成一棵查询树，
-	用 Query 来表示查询树。
-
-	查询优化模块在获取到查询树之后 ， 开始对查询树进行逻辑优化 ， 也就是对查询树进行等
-	价变换，将其重写成一棵新 的查询树 ， 这个新的查询树又作为物理优化的输入参数，进行物理
-	优化
-*/
+ * 一个 SQL 语句在执行过程中，经过词法分析、语法分析和语义分析之后，会生成一棵查询树，
+ * 用 Query 来表示查询树。
+ * 
+ * 查询优化模块在获取到查询树之后 ， 开始对查询树进行逻辑优化 ， 也就是对查询树进行等
+ * 价变换，将其重写成一棵新 的查询树 ， 这个新的查询树又作为物理优化的输入参数，进行物理
+ * 优化
+ * 
+ * Query 结构体的成员与 SQL 语句的各个子句基本一一对应。SQL 语法分析主要是把一条完整
+ * 的文本字符串分解为查询树上具有不同含义的 Query 结构体的成员,以便于程序理解 SQL 语句
+ * 
+ * PostgreSQL.conf文件中设置 debug_print_parse = on,PostgreSQL 可以输出查
+ * 询树的结构内容
+ */
 typedef struct Query
 {
 	// Node 类型, 例如 T_Query
@@ -118,6 +124,9 @@ typedef struct Query
 	// 语句类型
 	CmdType		commandType;	/* select|insert|update|delete|utility */
 	// 是原始查询还是来自规则的查询
+	/* 表示 Query 结构体形成是在语法分析阶段还是由查询重写模块 ( 规则模块 ) 生
+     * 成 (有多种情况,有直接根据 SQL 生成的 Query, 也有经规则变换得到的 Query, 可以
+	 * 参见枚举 QuerySource)*/
 	QuerySource querySource;	/* where did I come from? */
 
 	uint32		queryId;		/* query identifier (can be set by plugins) */
@@ -129,6 +138,8 @@ typedef struct Query
 	// INSERT/UPDATE/DELETE 操作的目标表
 	int			resultRelation; /* rtable index of target relation for
 								 * INSERT/UPDATE/DELETE; 0 for SELECT */
+	
+	/*================= 各种类型的字句是否存在的标识 =======================*/
 	// 目标属性或者 having 字句中是否有聚集函数
 	// 是否在 tlist 或 havingQual 上有聚集操作
 	bool		hasAggs;		/* has aggregates in tlist or havingQual */
@@ -144,7 +155,13 @@ typedef struct Query
 	bool		hasModifyingCTE;	/* has INSERT/UPDATE/DELETE in WITH */
 	bool		hasForUpdate;	/* FOR [KEY] UPDATE/SHARE was specified */
 	bool		hasRowSecurity; /* rewriter has applied some RLS policy */
-	// with 字节，用于公共表达式
+
+	/*===================== 表示各个字句的数据结构 =========================*/
+	/* 可以看出，对于 SELECT-LIST, 在查询树中，各个可能出现的字句都有对应的成员标识
+	 * 如目标列 targetList, 分组 groupClause 等
+	 */
+
+	// with 字句，用于公共表达式
 	List	   *cteList;		/* WITH list (of CommonTableExpr's) */
 	// 范围表, 在 select 语句中 from 子句中出现的表
 	// SQL 语句涉及的表清单
@@ -199,10 +216,15 @@ typedef struct Query
 	Node	   *limitCount;		/* # of result tuples to return (int8 expr) */
 	// 行标记连标，用于 for update / for share 子句
 	List	   *rowMarks;		/* a list of RowMarkClause's */
-	// 集合操作 （union, intersect, except）
+
+	/* 是否是集合操作 (UNION/INTERSECT/EXCEPT), 在 grouping_planner 函数中作为主要判
+	 * 断条件区分集合操作和非集合操作
+	 * 如果顶层的 SQL 语句存在集合操作 UNION/INTERSECT/EXCEPT, 则表示为集合操作树
+	 */
 	Node	   *setOperations;	/* set-operation tree if this is top level of
 								 * a UNION/INTERSECT/EXCEPT query */
 
+	/* 内部依赖关系链表,如表对象上的索引、触发器等都依赖表 */
 	List	   *constraintDeps; /* a list of pg_constraint OIDs that the query
 								 * depends on to be semantically valid */
 
@@ -253,7 +275,139 @@ typedef struct Query
 	例4. SELECT st.sname, c.cname, sc.degree FROM STUDENT st , COURSE c 
 		INNER JOIN SCORE sc ON c.cno = sc.cno WHERE st.sno = sc.sno；
 	见 Query1.png
-
+*/
+/* postgresql 输出 query 结构, 
+				Table “ public.t1"
+	Column | Type                        | Modifiers
+	  a    | integer				  	 |
+	  b    | character(10)				 |
+	  c    | timestamp without time zone |
+ 
+Query 结构如下: select * from t1;
+LOG: parse tree:
+DETAIL: {QUERY
+    :commandType 1 // 在 CmdType 枚举中, CMD_SELECT位列第二个, 枚举
+                   // 值从 0 开始, 故 select 询,其值为 1
+    :querySource 0 // 为经过变换得到的查询树, QuerySource 为枚举中的
+                   // 第一个 QSRC_ORIGINAL, 值为 0
+    :canSetTag true
+    :utilityStmt <>
+    :resultRelation 0
+    :intoClause <>>
+    // 查询简单,无任何附加内容,故以下值为 false
+    :hasAggs false
+    :hasWindowFuncs false
+    :hasSubLinks false
+    :hasDistinctOn false
+    :hasRecursive false
+    :hasForUpdate false
+    // 以下可以看出各个子句的结构, 一些值为 <>, 表示没有对应的子句
+    :cteList <>
+    :rtable (
+        {RTE
+        :alias <>
+        :eref
+            {ALIAS
+            :aliasname t1 // 表 t1
+            :colnames ("a" "b" "c")
+            }
+        :rtekind 0
+        :relid 16385
+        :inh true
+        inFromCl true
+        // 以下 4 行标识与权限相关的信息
+        :requiredPerms 2
+        :checkAsUser 0
+        :selectedCols (b 9 10 11)
+        :modifiedCols (b)
+        }
+    )
+    :jointree // 对应 FromExpr 结构体
+        {FROMEXPR
+        :fromlist (
+            {RANGETBLREF
+            :rtindex 1
+            }
+        )
+        :quals <>
+        }
+    :targetList ( // 表 t1 有 3 列, 故下面有 3 个 TARGETENTRY
+        {TARGETENTRY
+        :expr
+            {VAR
+            :varno 1
+            :varattno 1 // 第一列
+            :vartype 23 // 表 "t1" 第一列, 为 integer 类型, 
+                        // 在 pg_type.h 中对应 int4 类型,可以
+                        // 根据值 23 在 pg_type.h 中查找确定
+            :vartypmod -1
+            :varlevelsup 0
+            :varnoold 1
+            :varoattno 1
+            :location 7
+            }
+        :resno 1
+        :resname a
+        :ressortgroupref 0
+        :resorigtbl 16385
+        :resorigcol 1
+        :resjunk false
+        }
+        {TARGETENTRY // 对应 TargetEntry 结构体
+        :expr
+            {VAR // 对应 Var 结构体
+            :varno 1
+            :varattno 2 // 第二列
+            :vartype 1042 // 表 t1 第二列，为 character(10) 类型
+                          // 在 pg_type.h 中对应的是 bpchar 类型
+            :vartypmod 14
+            :varlevelsup 0
+            :varnoold 1
+            :varoattno 2
+            :location 7
+            }
+        :resno 2
+        :resname b
+        :ressortgroupref 0
+        :resorigtbl 16385
+        :resorigcol 2
+        :resjunk false
+        }
+        {TARGETENTRY
+        :expr
+            {VAR
+            :varno 1
+            :varattno 3 // * t1 #
+            :vartype 1114 // 表 t1 第三列,为 timestamp without
+                          // time zone 类型, 在 pg_type.h 中对应
+                          // 的是 timestamp 类型 
+            :vartypmod -1
+            :varlevelsup 0
+            :varnoold 1
+            :varoattno 3
+            :location 7
+            }
+        :resno 3
+        :resname c
+        :ressortgroupref 0
+        :resorigtbl 16385
+        :resorigcol 3
+        :resjunk false
+        }
+        )
+    :returningList <>
+    :groupClause <>
+    :havingQual <>
+    :windowClause <>
+    :distinctClause >
+    :sortClause <>
+    :limitOffset <>
+    :limitCount <>
+    :rowMarks <>
+    :setOperations <>
+    :constraint Deps <>
+    }
+STATEMENT: select * from t1;
 */
 
 /****************************************************************************

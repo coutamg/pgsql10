@@ -84,13 +84,24 @@
  *
  * PORTAL_MULTI_QUERY: all other cases.  Here, we do not support partial
  * execution: the portal's queries will be run to completion on first call.
+ * 
+ * PORTAL_ONE_RETURNING 和 PORTAL_UTIL_SELECT 两种策略的共同点在于, 它们所对应
+ * 的 SQL 语句的执行过程本来是没有返回结果的, 但是由于特殊的需要, 会向用户生成类似 
+ * SELECT 查询结果的输出, 因此这两种策略下的执行需要缓存结果.
  */
 typedef enum PortalStrategy
 {
+	/* 处理单个的 SELECT 语句，调用 Executor 模块; */
 	PORTAL_ONE_SELECT,
+	/* 处理带 RETURNING的UPDATE/DELETE/INSERT 语句，调用 Executor模块 */
 	PORTAL_ONE_RETURNING,
+	/* 处理带有 INSERT/UPDATE/DELETE 的 WITH 子句的 SELECT，其处理逻辑类似
+	 * PORTAL_ONE_RETURNING. 调用 Executor模块
+	 */
 	PORTAL_ONE_MOD_WITH,
+	/* 处理单个的数据定义语句, 需要缓存结果返回, 调用 ProcessUtility 模块 */
 	PORTAL_UTIL_SELECT,
+	/* 是前面几种策略的混合，可以处理多个原子操作 */
 	PORTAL_MULTI_QUERY
 } PortalStrategy;
 
@@ -111,6 +122,7 @@ typedef enum PortalStatus
 
 typedef struct PortalData *Portal;
 
+/* 参考 portal_data.png */
 typedef struct PortalData
 {
 	/* Bookkeeping data */
@@ -131,8 +143,10 @@ typedef struct PortalData
 	SubTransactionId activeSubid;	/* the last subxact with activity */
 
 	/* The query or queries the portal will execute */
+	/* 原始的 SQL 语句 */
 	const char *sourceText;		/* text of query (as of 8.4, never NULL) */
 	const char *commandTag;		/* command tag for original query */
+	/* 查询编译器输出的插叙计划树链表, 为啥是链表？ */
 	List	   *stmts;			/* list of PlannedStmts */
 	CachedPlan *cplan;			/* CachedPlan, if stmts are from one */
 
@@ -140,6 +154,7 @@ typedef struct PortalData
 	QueryEnvironment *queryEnv; /* environment for query */
 
 	/* Features/options */
+	/* 当前查询选择的执行策略 */
 	PortalStrategy strategy;	/* see above */
 	int			cursorOptions;	/* DECLARE CURSOR option bits */
 	bool		run_once;		/* portal will only be run once */
@@ -149,9 +164,11 @@ typedef struct PortalData
 	bool		portalPinned;	/* a pinned portal can't be dropped */
 
 	/* If not NULL, Executor is active; call ExecutorEnd eventually: */
+	/* 查询描述符，存储执行查询所需要的所有信息 */
 	QueryDesc  *queryDesc;		/* info needed for executor invocation */
 
 	/* If portal returns tuples, this is their tupdesc: */
+	/* 描述可能的返回元组的结构 */
 	TupleDesc	tupDesc;		/* descriptor for result tuples */
 	/* and these are the format codes to use for the columns: */
 	int16	   *formats;		/* a format code for each column */

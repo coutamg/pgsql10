@@ -371,6 +371,9 @@ ProcessUtility(PlannedStmt *pstmt,
  * which requires being in a valid transaction.
  * 
  * 参考 https://blog.csdn.net/Hehuyi_In/article/details/124524307
+ * 
+ * ProcessUtility 将通过判断数据结构中 NodeTag 字段的值来区分各种不同节点,并引导执
+ * 行流程进入相应的处理函数
  */
 void
 standard_ProcessUtility(PlannedStmt *pstmt,

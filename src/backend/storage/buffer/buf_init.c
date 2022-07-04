@@ -63,6 +63,11 @@ CkptSortItem *CkptBufferIds;
  *
  * This is called once during shared-memory initialization (either in the
  * postmaster, or in a standalone backend).
+ * 
+ * Buf 结构
+ * 缓冲区：一块地址连续的空间，分为几种类型的缓冲区（元信息块、数据缓冲区块、其他信息块）
+ * 数据缓冲区块：地址连续的、多个缓存块的组合。内存中真正的数据存放区。缓冲区的组成之一。
+ * 缓存块：最小的缓存数据块的缓存单位。被数据缓存块包含
  */
 void
 InitBufferPool(void)
@@ -72,12 +77,18 @@ InitBufferPool(void)
 				foundIOLocks,
 				foundBufCkpt;
 
-	/* Align descriptors to a cacheline boundary. */
+	/* Align descriptors to a cacheline boundary. 从共享内存中分配 */
+	/* 大小: NBuffers * sizeof(BufferDescPadded)
+	 * 功能: 缓冲区的元信息，表述数据库缓冲区分配出去的缓存块等的使用情况
+	 */
 	BufferDescriptors = (BufferDescPadded *)
 		ShmemInitStruct("Buffer Descriptors",
 						NBuffers * sizeof(BufferDescPadded),
 						&foundDescs);
 
+	/* 大小: NBuffers * (Size) BLCKSZ
+	 * 功能: 形式上是“char *”，本质上是内存开辟出的一块地址连续的区域
+	 */
 	BufferBlocks = (char *)
 		ShmemInitStruct("Buffer Blocks",
 						NBuffers * (Size) BLCKSZ, &foundBufs);
@@ -144,6 +155,10 @@ InitBufferPool(void)
 	}
 
 	/* Init other shared buffer-management stuff */
+	/*
+	 * 搜索 buf 的 hash + 置换策略指示器。
+	 * Buf 的置换调度策略管理
+	 */
 	StrategyInitialize(!foundDescs);
 
 	/* Initialize per-backend file flush context */

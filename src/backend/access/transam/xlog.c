@@ -569,12 +569,16 @@ typedef struct XLogCtlInsert
 
 /*
  * Total shared-memory state for XLOG.
+ *
+ * 参考 https://blog.csdn.net/fly2nn/article/details/6886859
+ * 图参考 xlogctldata.png
  */
 typedef struct XLogCtlData
 {
-	XLogCtlInsert Insert;
+	XLogCtlInsert Insert; /* 标识插入位置 */
 
 	/* Protected by info_lck: */
+	/* 标识刷出请求的位置，请求未必已经被执行 */
 	XLogwrtRqst LogwrtRqst;
 	XLogRecPtr	RedoRecPtr;		/* a recent copy of Insert->RedoRecPtr */
 	uint32		ckptXidEpoch;	/* nextXID & epoch of latest checkpoint */
@@ -596,6 +600,7 @@ typedef struct XLogCtlData
 	 * Protected by info_lck and WALWriteLock (you must hold either lock to
 	 * read it, but both to update)
 	 */
+	/* 标识刷出结果的位置，已经刷出日志的位置 */
 	XLogwrtResult LogwrtResult;
 
 	/*
@@ -615,7 +620,15 @@ typedef struct XLogCtlData
 	 * and xlblocks values certainly do.  xlblock values are protected by
 	 * WALBufMappingLock.
 	 */
+	/* 要写出的日志信息 */
 	char	   *pages;			/* buffers for unwritten XLOG pages */
+	/* 注意，日志信息，大小不同，指针指向不同的块，实际上，放的主要是数据缓存块的信息，这样，
+	 * 恢复时，不是以记录为单位恢复，而是以数据库运行态中的实际的“数据块”（数据缓存中的以块
+	 * 为单位的信息）做恢复。不好之处是，可能使得日志文件中的信息量很大。基于逻辑信息（SQL语句）
+	 * 和基于物理信息（数据块）做恢复，是个争论点。教科书上，通常讲到REDO日志的时候，只会使
+	 * 用“前映像”和“后映像”指代恢复的单位，不明确说出恢复的单位，这是讲原理和工程实现之间的
+	 * 差别所在
+	 */
 	XLogRecPtr *xlblocks;		/* 1st byte ptr-s + XLOG_BLCKSZ */
 	int			XLogCacheBlck;	/* highest allocated xlog buffer index */
 
@@ -701,6 +714,37 @@ typedef struct XLogCtlData
 
 	slock_t		info_lck;		/* locks shared variables shown above */
 } XLogCtlData;
+/* 日志缓存管理的方式，主要是如下算法（方法）构成
+ * 图参考 xlogctldata.png
+ * 日志缓存，由8k大小的共享缓存构成（8k不准确，可以查看XLOGShmemSize理解更为精确）。
+ * 日志缓存，有个“元信息”块，就像数据缓冲区的“BufferDesc”一样，有个“XLogCtlData”描述
+ * 了日志缓冲区的使用情况。
+ *
+ * 日志缓存，是个固定大小的区域（如 xlogctldata.png 图左侧，2个方块，代表的是同一个日志缓冲区),
+ * 而日志文件，是个线性连续不断的文件（如 xlogctldata.png 图右侧，使用了3个方块表示日志文件，
+ * 但日志文件根据日志号连续标识，可以看作是一个线性增长的文件序列），如何以固定区域的一块内存对应
+ * 外存的线性文件，是我们需要掌握的问题。
+ * 
+ * 对于日志缓存而言（如 xlogctldata.png 图左侧），其大小是固定的，内存总是要比外存小，这样，以有
+ * 限的内存映射无限的外存文件，则必须循环使用内存。其用法，有点像我们学习过的“循环数组”。
+ * 
+ * 1. 内存日志缓存，其大小固定
+ * 2. 内存日志缓存中存放的日志块，大小不固定。（图示的左侧的日志缓存中的小块，看起来均匀，但实际
+ * 	  上，其中存放的日志信息的大小是不一样的）
+ * 3. 当内存日志缓存中有足够的空间（每次存放日志信息的时候，主要要比较空余空间大小），则可以把信息
+ * 	  放到日志缓存中
+ * 4. 当日志缓存没有足够的空间，则需要写出（调用 XLogWrite ）一些信息到日志文件，以便重复利用日
+ * 	  志（循环使用）
+ * 5. 当日志缓存写到尾部且空间不足时，除了要刷出一部分数据外，还要注意，从日志缓存头部刷出信息后要
+ * 	  被重复利用
+ * 6. 日志缓存的信息是线性刷出的，这样日志文件中的信息必然是连续的（连续通过“LSN”这样的东西表示，
+ * 	  可以通过 PageGetLSN 函数入手追踪 LSN，实则是日志的 ID 和文件中的偏移的组合标识，日志 ID
+ * 	  对应一个日志文件，偏移则标识了文件内的位置，这样就唯一标识了一个物理位置）
+ * 7. 日志缓存到日志文件，是单项的，只写不读，对 IO 的影响不大
+ * 8. 特别需要注意阅读代码的地方是：跨页写（调用 XLByteInPrevSeg 函数之处）、日志文件的切换（写
+ * 	  满后怎么再写到下一个文件，XLogWrite 函数中如何调用 XLogFileClose 和 XLogFileInit 和
+ * 	  XLogFileOpen 函数）
+ */
 
 static XLogCtlData *XLogCtl = NULL;
 
@@ -2036,6 +2080,10 @@ XLogRecPtrToBytePos(XLogRecPtr ptr)
  * true, initialize as many pages as we can without having to write out
  * unwritten data. Any new pages are initialized to zeros, with pages headers
  * initialized properly.
+ * 
+ * 参考 https://blog.csdn.net/fly2nn/article/details/6883220
+ * 写日志时，空余空间不够，则预先分配一块 buf（方式是：先调用 XLogWrite 刷出一部分日志，然后
+ * 把日志信息放入日志缓存）
  */
 static void
 AdvanceXLInsertBuffer(XLogRecPtr upto, bool opportunistic)
@@ -2332,6 +2380,9 @@ XLogCheckpointNeeded(XLogSegNo new_segno)
  * Must be called with WALWriteLock held. WaitXLogInsertionsToFinish(WriteRqst)
  * must be called before grabbing the lock, to make sure the data is ready to
  * write.
+ * 
+ * 调用 write() 把日志缓存的内容刷出到外存。调用 XLogFileClose 和 XLogFileOpen 进行
+ * 文件切换（日志文件写满了，关掉当前日志文件，打开下一个日志文件写入日志信息）
  */
 static void
 XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
@@ -2752,6 +2803,9 @@ UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force)
  *
  * NOTE: this differs from XLogWrite mainly in that the WALWriteLock is not
  * already held, and we try to avoid acquiring it if possible.
+ * 
+ * 参考 https://blog.csdn.net/fly2nn/article/details/6883220
+ * 把日志缓存的内容刷出到外存（调用XLogWrite）
  */
 void
 XLogFlush(XLogRecPtr record)
@@ -4844,6 +4898,7 @@ XLOGShmemSize(void)
 	return size;
 }
 
+/* 参考 https://blog.csdn.net/fly2nn/article/details/6883220 */
 void
 XLOGShmemInit(void)
 {

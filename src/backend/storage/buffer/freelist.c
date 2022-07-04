@@ -26,6 +26,36 @@
 /*
  * The shared freelist control information.
  */
+/* Buf 的置换调度策略管理相关数据结构
+ * 参考: https://blog.csdn.net/fly2nn/article/details/6857724
+ * 图参考 BufferStrategyControl.png
+ * 
+ * 图的说明：
+ * 1. 左侧，是解释区，第一椭圆说明了整体缓存的情况；第二个椭圆表示 PostgreSQL 数据库初始化后，
+ * 	  在data（数据目录）中初始化出的配置文件，此文件存放数据启动、运行时需要的各种参数，其中，有
+ *    关缓存的参数是 “shared_buffers”，表示缓冲区大小，实际大小的计算方式，参见上图；“NBuffers”
+ * 	  是代码中和缓冲区相关的变量，其值源于 GUC 参数 “shared_buffers”。
+ *
+ * 2. 右侧，是缓冲区。由四块地址连续的区域组成。分别是：缓存头、缓存块集合、缓存块快速查找 hashtable
+ * 	   ,置换策略指示器。
+ * 
+ * 3. 缓冲区的第一个部分：【缓存头】，与【缓存块集合】一一对应，每一个缓存块，都有自己的一份使用
+ * 	   情况信息，保存在【缓存头中】。
+ * 
+ * 4. 缓冲区的第二个部分：【缓存块集合】，与外存的数据块对应，是 n:m 的关系。当缓存块还有空闲的时候，
+ * 	   则从空闲链表中取缓存块共上层（数据访问层）使用，否则，使用 “clock” 算法，淘汰一个页面(页面
+ *     大小对应一个块，8k)，然后给这个页面置相应值（如可能读入新数据到缓存块）并他的元信息(缓存头中
+ * 	   对应的使用情况信息，如是否加锁等)，最后返回这个块
+ * 
+ * 5. 缓冲区的第三个部分：【缓存块快速查找 hashtable 】，把所有缓存块注册到一个 hash 表中，便于快速
+ *     查找缓存块
+ * 
+ * 6. 缓冲区的第四个部分：【置换策略指示器】，与缓存块的页面淘汰算法直接相关，指示了哪个缓存块可以被淘
+ *    汰（注意图中从【置换策略指示器】发出的线的指向，对应的变量是 nextVictimBuffer，其用法
+ *    “nextVictimBuffer++”, 表明缓存块是从前到后逐个被淘汰的，这就是简单的 “clock” 算法，但并
+ *    非说：缓存块是依次被淘汰，而是从前到后，找到没有被使用的、可被淘汰的---如脏页、引用计数为零的---
+ * 	  进行淘汰，当 nextVictimBuffer 达到最大值，则变为零，从前面再重新开始淘汰）。
+ */
 typedef struct
 {
 	/* Spinlock: protects the values below */
@@ -35,6 +65,9 @@ typedef struct
 	 * Clock sweep hand: index of next buffer to consider grabbing. Note that
 	 * this isn't a concrete buffer - we only ever increase the value. So, to
 	 * get an actual buffer, it needs to be used modulo NBuffers.
+	 * 
+	 * 指向缓存块（缓存块是地址连续的，所以把缓存块当作数组，用 int 型下标即可表示下一个要被
+	 * 置换的缓存块的位置）
 	 */
 	pg_atomic_uint32 nextVictimBuffer;
 
@@ -248,6 +281,10 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state)
 	 * buffer_strategy_lock not the individual buffer spinlocks, so it's OK to
 	 * manipulate them without holding the spinlock.
 	 */
+	/*
+	 * 1. PG维护一个“freelist”，将空闲的块，置于其上，当有空闲块时，直接从空闲块中取；当有块
+	 *    不再使用，可以归入到空闲块中
+	 */
 	if (StrategyControl->firstFreeBuffer >= 0)
 	{
 		while (true)
@@ -296,6 +333,14 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state)
 	}
 
 	/* Nothing on the freelist, so run the "clock sweep" algorithm */
+	/* 2. 当空闲块已经用完，则执行淘汰策略，如下：
+	 * 3. 缓冲块使用频率较高，不将其替换，只是将它的使用计数减一
+	 * 4. 如果缓冲块的引用计数是 0，使用计数也是 0，就是说当前使用这个缓冲块，而且
+	 *    这个缓冲块最近无人使用，那么就可以重新使用了，这时，淘汰这个块上写的信息（
+	 *    脏页，刷出信息到外存），然后供重新使用
+	 * 5. 如果已经遍历了所有的缓冲块，发现所有缓冲块都被别人占用，则报错，因为无法找到
+	 *    可用的缓冲区块了
+	 */
 	trycounter = NBuffers;
 	for (;;)
 	{
@@ -469,10 +514,19 @@ StrategyInitialize(bool init)
 	 * happening in each partition concurrently, so we could need as many as
 	 * NBuffers + NUM_BUFFER_PARTITIONS entries.
 	 */
+	/* 初始化搜索 buf 的一个 hash 结构 
+	 * 相关数据结构 SharedBufHash
+	 * 	作用：哈希表，用于缓存块的快速查找
+	 */
 	InitBufTable(NBuffers + NUM_BUFFER_PARTITIONS);
 
 	/*
 	 * Get or create the shared strategy control block
+	 */
+	/* 大小: sizeof(BufferStrategyControl)
+	 * 功能: 置换策略指示器。注意不要被变量名蒙蔽，和“缓存淘汰策略”并没有直接关系
+	 *
+	 * 相关数据结构: BufferStrategyControl
 	 */
 	StrategyControl = (BufferStrategyControl *)
 		ShmemInitStruct("Buffer Strategy Status",

@@ -56,6 +56,9 @@
  */
 typedef struct RelFileNode
 {
+	/* 表空间，本身是一个物理存储的概念，每个表空间的 id 与其具体的数据文件对应，这
+	 * 样使得缓存块可以和数据文件对应
+	 */
 	Oid			spcNode;		/* tablespace */
 	Oid			dbNode;			/* database */
 	Oid			relNode;		/* relation */

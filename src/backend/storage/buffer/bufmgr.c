@@ -982,6 +982,18 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
  * we keep it for simplicity in ReadBuffer.
  *
  * No locks are held either at entry or exit.
+ * 
+ * 参考 https://blog.csdn.net/fly2nn/article/details/6832475
+ * 
+ * 当有 buf 可以被分配时，从缓冲区拿出“空闲”（有个 freelist 结构）的缓存块进行
+ * 分配，如果缓冲区已经满，则根据缓存淘汰算法，对缓存中的被选中的脏页进行刷出，然后
+ * 分配给提出需求者
+ * 
+ * BufferAlloc 被调用关系：
+ * BufferAlloc
+ *     ReadBuffer_common
+ *            ReadBufferExtended
+ *            ReadBufferWithoutRelcache
  */
 static BufferDesc *
 BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
@@ -989,6 +1001,9 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			BufferAccessStrategy strategy,
 			bool *foundPtr)
 {
+	/* 变量定义区，查看 “volatile BufferDesc *buf;” 的使用之处，可以更好把握
+	 * buf 的分配情况
+	 */
 	BufferTag	newTag;			/* identity of requested block */
 	uint32		newHash;		/* hash value for newTag */
 	LWLock	   *newPartitionLock;	/* buffer partition lock for it */
@@ -1010,6 +1025,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 	/* see if the block is in the buffer pool already */
 	LWLockAcquire(newPartitionLock, LW_SHARED);
+	/* 调用 BufTableLookup 函数确定要求的块是否在缓冲区中 */
 	buf_id = BufTableLookup(&newTag, newHash);
 	if (buf_id >= 0)
 	{
@@ -1045,7 +1061,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				*foundPtr = FALSE;
 			}
 		}
-
+		/* 如果找到这样的缓存块，则作为 BufferAlloc 函数的返回值返回找到的缓存块 */
 		return buf;
 	}
 
@@ -1056,6 +1072,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	LWLockRelease(newPartitionLock);
 
 	/* Loop here in case we have to try another victim buffer */
+	/* 如果没有找到，反复循环，淘汰一些缓冲块出缓冲区 */
 	for (;;)
 	{
 		/*
@@ -1067,6 +1084,9 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		/*
 		 * Select a victim buffer.  The buffer is returned with its header
 		 * spinlock still held!
+		 * 
+		 * 对 StrategyGetBuffer 函数的调用、对得到的 buf 判断是否是 dirty，
+		 * 如果是, 则淘汰
 		 */
 		buf = StrategyGetBuffer(strategy, &buf_state);
 

@@ -452,6 +452,14 @@ AtCCI_RelationMap(void)
  *
  * During abort, we just have to throw away any pending map changes.
  * Normal post-abort cleanup will take care of fixing relcache entries.
+ * 
+ * 在主事务提交或中止时处理关系映射。在提交期间，必须在实际事务提交之前尽可能晚地调
+ * 用该函数，以便在提交映射更改后最小化事务仍然可以回滚的窗口。虽然在这种情况下不会发
+ * 生非常糟糕的情况，但我们仍然希望它不要发生，因为我们可能会丢失对关系的 pg_class
+ * 行有用的更新。
+ * 
+ * 在中止期间，我们只需要丢弃任何挂起的映射更改。正常的中止后清理将负责修复r elcache
+ * 条目。
  */
 void
 AtEOXact_RelationMap(bool isCommit)

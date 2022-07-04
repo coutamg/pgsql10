@@ -60,7 +60,9 @@ InitBufTable(int size)
 	info.keysize = sizeof(BufferTag);
 	info.entrysize = sizeof(BufferLookupEnt);
 	info.num_partitions = NUM_BUFFER_PARTITIONS;
-
+	/* 大小: NBuffers + NUM_BUFFER_PARTITIONS
+	 * 功能: 为便于搜索buf的一个hash结构
+	 */
 	SharedBufHash = ShmemInitHash("Shared Buffer Lookup Table",
 								  size, size,
 								  &info,

@@ -281,11 +281,11 @@ struct PGPROC
 	//---------- 锁管理数据,记录该后台进程以最快路径获得的锁
 	// 每一个fast-path slot的锁模式
 	/*
-	  是一个位图，它目前是一个64位的无符号整型，其中只有48位是有用的。每3位组成一个槽，
-	  每个槽都和PGPROC->fpRelId数组中的表对应。
-	  当一个事务要对弱锁使用 Fast Path 时，就尝试在 PGPROC->fpLockBits 中记录当前的锁模式，
-	  这时候事务就能够获得锁了
-	*/
+	 * 是一个位图，它目前是一个64位的无符号整型，其中只有48位是有用的。每3位组成一个槽，
+	 * 每个槽都和PGPROC->fpRelId数组中的表对应。
+	 * 当一个事务要对弱锁使用 Fast Path 时，就尝试在 PGPROC->fpLockBits 中记录当前的锁模式，
+	 * 这时候事务就能够获得锁了
+	 */
 	uint64		fpLockBits;		/* lock modes held for each fast-path slot */
 	// rel oids 的 slots
 	// 弱锁保存在本事务的Fast Path中

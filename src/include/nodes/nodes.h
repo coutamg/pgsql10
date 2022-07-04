@@ -25,10 +25,12 @@
  */
 typedef enum NodeTag
 {
-	T_Invalid = 0,
+	T_Invalid = 0, /* 所有不合法的节点为 0 */
 
 	/*
 	 * TAGS FOR EXECUTOR NODES (execnodes.h)
+	 * 与执行器相关的节点，每个节点的命名方式是
+	 *  T + 对象的数据结构名称
 	 */
 	T_IndexInfo,
 	T_ExprContext,
@@ -40,6 +42,7 @@ typedef enum NodeTag
 
 	/*
 	 * TAGS FOR PLAN NODES (plannodes.h)
+	 * 与查询执行计划相关的节点
 	 */
 	T_Plan,
 	T_Result,
@@ -92,6 +95,7 @@ typedef enum NodeTag
 	 * TAGS FOR PLAN STATE NODES (execnodes.h)
 	 *
 	 * These should correspond one-to-one with Plan node types.
+	 * 查询执行计划状态相关节点，被执行器使用，与查询执行计划节点一一对应
 	 */
 	T_PlanState,
 	T_ResultState,
@@ -138,6 +142,7 @@ typedef enum NodeTag
 
 	/*
 	 * TAGS FOR PRIMITIVE NODES (primnodes.h)
+	 * 内部使用的一些私有节点，通常用户不可见
 	 */
 	T_Alias,
 	T_RangeVar,
@@ -200,6 +205,8 @@ typedef enum NodeTag
 	 * node, they're fully handled within execExpr* - but sometimes the state
 	 * needs to be shared with other parts of the executor, as for example
 	 * with AggrefExprState, which nodeAgg.c has to modify.
+	 * 
+	 * 表达式状态相关节点，与私有节点一一对应
 	 */
 	T_ExprState,
 	T_AggrefExprState,
@@ -211,10 +218,11 @@ typedef enum NodeTag
 
 	/*
 	 * TAGS FOR PLANNER NODES (relation.h)
+	 * 查询优化过程相关节点，用于查询优化处理
 	 */
-	T_PlannerInfo,
+	T_PlannerInfo, /* 与优化器紧密相关 */
 	T_PlannerGlobal,
-	T_RelOptInfo,
+	T_RelOptInfo, /* 与优化器紧密相关 */
 	T_IndexOptInfo,
 	T_ForeignKeyOptInfo,
 	T_ParamPathInfo,
@@ -270,6 +278,7 @@ typedef enum NodeTag
 
 	/*
 	 * TAGS FOR MEMORY NODES (memnodes.h)
+	 * 内存操作相关节点
 	 */
 	T_MemoryContext,
 	T_AllocSetContext,
@@ -277,6 +286,7 @@ typedef enum NodeTag
 
 	/*
 	 * TAGS FOR VALUE NODES (value.h)
+	 * 与表达值的类型相关的节点
 	 */
 	T_Value,
 	T_Integer,
@@ -287,6 +297,7 @@ typedef enum NodeTag
 
 	/*
 	 * TAGS FOR LIST NODES (pg_list.h)
+	 * 链表节点
 	 */
 	T_List,
 	T_IntList,
@@ -299,11 +310,12 @@ typedef enum NodeTag
 
 	/*
 	 * TAGS FOR STATEMENT NODES (mostly in parsenodes.h)
+	 * 查询语句解析执行过程相关节点
 	 */
 	T_RawStmt,
-	T_Query,
+	T_Query, /* 查询树，与优化器紧密相关*/
 	T_PlannedStmt,
-	T_InsertStmt,
+	T_InsertStmt, /* 插入语句 */
 	T_DeleteStmt,
 	T_UpdateStmt,
 	T_SelectStmt,
@@ -416,6 +428,7 @@ typedef enum NodeTag
 
 	/*
 	 * TAGS FOR PARSE TREE NODES (parsenodes.h)
+	 * 查询分析过程中查询树涉及的节点
 	 */
 	T_A_Expr,
 	T_ColumnRef,
@@ -508,7 +521,7 @@ typedef enum NodeTag
  */
 typedef struct Node
 {
-	NodeTag		type;
+	NodeTag		type; /* 标识节点类型 */
 } Node;
 
 #define nodeTag(nodeptr)		(((const Node*)(nodeptr))->type)

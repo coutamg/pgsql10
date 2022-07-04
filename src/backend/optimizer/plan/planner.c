@@ -616,7 +616,7 @@ subquery_planner(PlannerGlobal *glob, // 记录做计划期间的全局信息，
 	root->hasJoinRTEs = false;
 	root->hasLateralRTEs = false;
 	hasOuterJoins = false;
-	// 根据查询树的范围表确定相关信息ßß
+	// 根据查询树的范围表确定相关信息
 	foreach(l, parse->rtable)
 	{
 		RangeTblEntry *rte = (RangeTblEntry *) lfirst(l);
@@ -870,7 +870,8 @@ subquery_planner(PlannerGlobal *glob, // 记录做计划期间的全局信息，
 	 * This step is most easily done after we've done expression
 	 * preprocessing.
 	 */
-	// 简化简单的内连接
+	/* 外连接的消除, 外连接转换为内连接
+	 */
 	if (hasOuterJoins)
 		reduce_outer_joins(root);
 

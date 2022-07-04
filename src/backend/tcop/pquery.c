@@ -229,6 +229,7 @@ ChoosePortalStrategy(List *stmts)
 	 * auxiliary queries to a SELECT or a utility command. PORTAL_ONE_MOD_WITH
 	 * likewise allows only one top-level statement.
 	 */
+	/* stmts 链表只有一个 Query/PlannedStmt 类型的节点 */
 	if (list_length(stmts) == 1)
 	{
 		Node	   *stmt = (Node *) linitial(stmts);
@@ -247,7 +248,11 @@ ChoosePortalStrategy(List *stmts)
 						return PORTAL_ONE_SELECT;
 				}
 				if (query->commandType == CMD_UTILITY)
-				{
+				{	
+					/* 节点的 utilityStmt 字段保存的是 FETCH 语句(类型为T_FetchStmt),
+					 * EXECUTE 语句(类型为T_ExecuteStmt)、EXPLAIN 语句(类型为T_ExplainStmt)
+					 * 或是 SHOW 语句(类型为T_VariableShowStmt)之一
+					 */
 					if (UtilityReturnsTuples(query->utilityStmt))
 						return PORTAL_UTIL_SELECT;
 					/* it can't be ONE_RETURNING, so give up */
@@ -475,6 +480,7 @@ PortalStart(Portal portal, ParamListInfo params,
 
 		/*
 		 * Determine the portal execution strategy
+		 * 调用 ChoosePortalStrategy 为 Portal 选择策略
 		 */
 		portal->strategy = ChoosePortalStrategy(portal->stmts);
 
@@ -494,6 +500,8 @@ PortalStart(Portal portal, ParamListInfo params,
 				/*
 				 * Create QueryDesc in portal's context; for the moment, set
 				 * the destination to DestNone.
+				 * 
+				 * 则调用 CreateQueryDesc 为 Portal 创建查询描述符
 				 */
 				queryDesc = CreateQueryDesc(linitial_node(PlannedStmt, portal->stmts),
 											portal->sourceText,
@@ -516,6 +524,10 @@ PortalStart(Portal portal, ParamListInfo params,
 
 				/*
 				 * Call ExecutorStart to prepare the plan for execution
+				 *
+				 * 对于 PORTAL_ONE_SELECT 策略的 Portal, 其中包含一个简单 SELECT 类型的查询
+				 * 计划树,在 PortalStart 中将调用 ExecutorStart 进行 Executor(执行器)初始化,
+				 * 然后在 PortalRun 中调用 ExecutorRun 开始执行器的执行过程
 				 */
 				ExecutorStart(queryDesc, myeflags);
 
@@ -548,8 +560,13 @@ PortalStart(Portal portal, ParamListInfo params,
 				 */
 				{
 					PlannedStmt *pstmt;
-
+		
 					pstmt = PortalGetPrimaryStmt(portal);
+					/* 则调用 ExecCleanTypeFromTL 为 portal 创建返回元组的描述符; 
+					 * 初始化返回元组的结构描述信息。接着 PortalRun 会调用 FillPortalStore 
+					 * 执行查询计划得到所有的结果元组并填充到缓存中,然后调用 RunFromStore 从
+					 * 缓存中获取元组并返回
+					 */
 					portal->tupDesc =
 						ExecCleanTypeFromTL(pstmt->planTree->targetlist,
 											false);
@@ -573,6 +590,7 @@ PortalStart(Portal portal, ParamListInfo params,
 					PlannedStmt *pstmt = PortalGetPrimaryStmt(portal);
 
 					Assert(pstmt->commandType == CMD_UTILITY);
+					/* 调用 UtilityTupleDescriptor 为 Portal 创建查询描述符 */
 					portal->tupDesc = UtilityTupleDescriptor(pstmt->utilityStmt);
 				}
 
@@ -610,6 +628,7 @@ PortalStart(Portal portal, ParamListInfo params,
 	CurrentResourceOwner = saveResourceOwner;
 	PortalContext = savePortalContext;
 
+	/* 将 Portal 的状态设置为 PORTAL_READY */
 	portal->status = PORTAL_READY;
 }
 
@@ -796,6 +815,10 @@ PortalRun(Portal portal, long count, bool isTopLevel, bool run_once,
 				break;
 
 			case PORTAL_MULTI_QUERY:
+				/* 数据库的定义语言会走到这里, 例如一个 create table 由 
+				 * create serial(用户产生自增序列), create table(创建基本关系),
+				 * create index(用于唯一检查) 等多个 sql 语句组成
+				 */
 				PortalRunMulti(portal, isTopLevel, false,
 							   dest, altdest, completionTag);
 
@@ -1174,7 +1197,7 @@ PortalRunUtility(Portal portal, PlannedStmt *pstmt,
 	}
 	else
 		snapshot = NULL;
-
+	/* 处理所有类型的数据定义语句 */
 	ProcessUtility(pstmt,
 				   portal->sourceText,
 				   isTopLevel ? PROCESS_UTILITY_TOPLEVEL : PROCESS_UTILITY_QUERY,

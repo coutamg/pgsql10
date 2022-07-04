@@ -1480,7 +1480,7 @@ is_simple_subquery(Query *subquery, RangeTblEntry *rte,
 	 * redesign...
 	 * 
 	 * 子查询树的 subQuery->setOperations 必须是 NULL，如果不是 NULL ，
-	 * 应该先交给 pull_up_simple_union_all 函数去处理。
+	 * 应该先交给 pull_up_simple_union_all 函数去处理。·
 	 */
 	if (subquery->setOperations)
 		return false;
@@ -2523,6 +2523,29 @@ flatten_simple_union_all(PlannerInfo *root)
  * To ease recognition of strict qual clauses, we require this routine to be
  * run after expression preprocessing (i.e., qual canonicalization and JOIN
  * alias-var expansion).
+ */
+/* 外连接的消除 
+ * 外连接操作可分为左外连接、右外连接和全外连接。连接过程中,外连接的左右子树不能互换, 
+ * 并且外连接与其他连接交换连接顺序时,必须满足严格的条件以进行等价变换
+ * 
+ * 查询重写的一项技术就是把外连接转换为内连接
+ * 1. 查询优化器在处理外连接操作时所需执行的操作和时间多于内连接
+ * 2. 优化器在选择表连接顺序时,可以有更多更灵活的选择,从而可以选择更好的表连
+ *	  接顺序,加快查询执行的速度
+ * 3. 表的一些连接算法(如块嵌套连接和索引循环连接等)将规模小的或筛选条件最严格
+ *    的表作为“外表”(放在连接顺序的最前面,是多层循环体的外循环层),可以减少不
+ *    必要的 IO 开销,极大地加快算法执行的速度
+ * 
+ * 参考 <数据库查询优化器的艺术> p34
+ * 左外连接向内连接转换条件:
+ * 	  RHS 关系中对应的条件,保证最后的结果集中不会出现 unmatched LHS tuples 部分
+ * 	  这样特殊的元组(这样的条件称为“reject-NULL 条件”)
+ * 
+ * 全外连接如果能同时向左外连接和右外连接转换,则意味着全外连接能转换为内连接。
+ * 	 其条件是: LHS 和 RHS 关系中对应的条件,均能满足 reject-NULL 条件
+ * 
+ * 右外连接对称等同左外连接, 所以通常都是把右外连接转换为左外连接,然后再向内连接转换。
+ * 右外连接向左外连接转换, 通常是发生在语法分析阶段
  */
 void
 reduce_outer_joins(PlannerInfo *root)

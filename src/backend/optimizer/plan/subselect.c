@@ -1456,14 +1456,18 @@ convert_ANY_sublink_to_join(PlannerInfo *root, // 查询优化模块的上下文
 	return result;
 }
 
-/*
+/* 
  * convert_EXISTS_sublink_to_join: try to convert an EXISTS SubLink to a join
  *
  * The API of this function is identical to convert_ANY_sublink_to_join's,
  * except that we also support the case where the caller has found NOT EXISTS,
  * so we need an additional input parameter "under_not".
  */
-/*
+/* EXISTS 的查询优化参考 数据库查询优化器艺术 p27
+ *
+ * EXISTS 对于子查询而言,其结果值是布尔值; 如果 subquery 有返回值, 则整个 EXISTS(subquery)
+ * 的值为 TRUE,否则为 FALSE
+ * 
  * EXISTS 类型的子连接和 ANY 类型的子连接不同，它没有左操作数，因此 EXISTS 类型的 子连接能
  * 够提升的条件与 ANY 类型的子连接也不同。
  * 

@@ -147,6 +147,10 @@ typedef struct PlannerGlobal
  * original Query.  Note that at present the planner extensively modifies
  * the passed-in Query data structure; someday that should stop.
  *----------
+ *
+ * PlannerInfo 描述关系代数查询树, 把关系等平面化到一个链表中
+ * (struct RelOptInfo **simple_rel_array),没有用树形结构表示它们,因为在这个阶段根本没法知
+ * 道表之间做什么样的连接.
  */
 typedef struct PlannerInfo
 {
@@ -502,10 +506,21 @@ typedef struct PlannerInfo
  */
 typedef enum RelOptKind
 {
+	/* 基本关系，单表或子查询的输出结果(输出结果有元信息，相当于表头或表结构；输
+	 * 出的内容相当于表的数据；所以，完全可以视为一个"关系")或出现在范围表中的
+	 * “函数的输出结 果"(PostgreSQL的系统和用户自定义函数，可以像一个查询结果的格
+	 * 式一样输出函数的结果集）。在RelOptinfo 结构体中储存在 simple_rel_array 中*/
 	RELOPT_BASEREL,
+	/* 连接关系，两个或两个以上的表进行连接后得到的新关系。在 RelOptinfo 结构体中
+	 * 储存在 join_rel_list 中
+	 */
 	RELOPT_JOINREL,
+	/* 其他关系，指向 "Single RT Indexes"，不属于连接数的一部分*/
 	RELOPT_OTHER_MEMBER_REL,
 	RELOPT_UPPER_REL,
+	/* 无用的基本关系，被证明在以后的"连接"中不会再被使用的关系（对优化查询树、输
+	 * 出语义表达的结果没有帮助的关系）
+	 */
 	RELOPT_DEADREL
 } RelOptKind;
 

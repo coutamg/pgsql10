@@ -410,6 +410,9 @@ XLogSetRecordFlags(uint8 flags)
  * (LSN is the XLOG point up to which the XLOG must be flushed to disk
  * before the data page can be written out.  This implements the basic
  * WAL rule "write the log before the data".)
+ * 
+ * 参考 https://blog.csdn.net/fly2nn/article/details/6883220
+ * 把内存中生成的日志信息插入到日志缓存中
  */
 XLogRecPtr
 XLogInsert(RmgrId rmid, uint8 info)

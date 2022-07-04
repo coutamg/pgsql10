@@ -2323,7 +2323,7 @@ CommitTransaction(void)
 	HOLD_INTERRUPTS();
 
 	/* Commit updates to the relation map --- do this as late as possible */
-	/* 提交更新到 relation map -- 尽量晚地执行该动作 */
+	/* 提交更新到 relation map -- 尽量晚地执行该动作, 这里只是写 catalog, 不需要加入原子操作。*/
 	AtEOXact_RelationMap(true);
 
 	/*

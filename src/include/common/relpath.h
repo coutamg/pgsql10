@@ -24,9 +24,15 @@
 typedef enum ForkNumber
 {
 	InvalidForkNumber = -1,
+	/* 对应数据文件，诸如 57360, 57360.1 */
 	MAIN_FORKNUM = 0,
+	/* 对应空闲空间映射文件，管理文件页的空闲空间映射 */
 	FSM_FORKNUM,
+	/* 对应 VisibilityMap，标记文件页可见性 */
 	VISIBILITYMAP_FORKNUM,
+	/* 用于在系统重启时重置 UNLOGGED 表，UNLOGGED 表 是一种特殊的表类型，表数
+	 * 据不需要日志保护，插入性能比普通表要快。
+	 */
 	INIT_FORKNUM
 
 	/*

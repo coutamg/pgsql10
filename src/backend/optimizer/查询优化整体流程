@@ -73,8 +73,8 @@ planner(){ // 第1层
 				 * 生成完整的查询执行计划
 				 */
 
-			} //第4层结束,grouping_planner()
-		} //第3层结東,subquery_planner()
+			} // 第 4 层结束,grouping_planner()
+		} // 第 3 层结束,subquery_planner()
 		set_plan_references();// 一些清理辅助工作
-	} //第2层结東，standard_planner()
-} //第1层结束,planner()
+	} // 第 2 层结束，standard_planner()
+} // 第 1 层结束, planner()
