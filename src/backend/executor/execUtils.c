@@ -617,6 +617,7 @@ ExecOpenScanRelation(EState *estate, Index scanrelid, int eflags)
 	 * relation.  In either of those cases, we got the lock already.
 	 */
 	lockmode = AccessShareLock;
+	/* 如果要扫描的表是 target 表(targetList?) 之一, 则不加锁, 因为外面已经加锁了 */
 	if (ExecRelationIsTargetRelation(estate, scanrelid))
 		lockmode = NoLock;
 	else

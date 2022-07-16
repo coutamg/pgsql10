@@ -428,6 +428,7 @@ typedef struct EState
 	ScanDirection es_direction; /* current scan direction */
 	Snapshot	es_snapshot;	/* time qual to use */
 	Snapshot	es_crosscheck_snapshot; /* crosscheck time qual for RI */
+	/* 查询涉及的范围表 */
 	List	   *es_range_table; /* List of RangeTblEntry */
 	PlannedStmt *es_plannedstmt;	/* link to top of plan tree */
 	const char *es_sourceText;	/* Source text from QueryDesc */
@@ -468,8 +469,9 @@ typedef struct EState
 	QueryEnvironment *es_queryEnv;	/* query environment */
 
 	/* Other working state: */
+	/* estate 所在的内存上下文, 也是执行过程中一直保持的内存上下文 */
 	MemoryContext es_query_cxt; /* per-query context in which EState lives */
-
+	/* 用于在节点间传递元组的全局元组表 */
 	List	   *es_tupleTable;	/* List of TupleTableSlots */
 
 	List	   *es_rowMarks;	/* List of ExecRowMarks */
@@ -492,6 +494,7 @@ typedef struct EState
 	 * checks and index-value computations.  It will be reset for each output
 	 * tuple.  Note that it will be created only if needed.
 	 */
+	/* 每获取一个元组就会回收的内存上下文 */
 	ExprContext *es_per_tuple_exprcontext;
 
 	/*
@@ -840,6 +843,14 @@ typedef TupleTableSlot *(*ExecProcNodeMtd) (struct PlanState *pstate);
  * abstract superclass for all PlanState-type nodes.
  * ----------------
  */
+/* PostgreSQL 为每种计划节点定义了一种状态节点。所有的状态节点均继承于 PlanState 节点,其中
+ * 包含辅助计划节点指针(Plan)、执行器全局状态结构指针(state)、投影运算相关信息(targetlist)、
+ * 选择运算相关条件(qual), 以及左右子状态节点指针(lefttree、righttree)。状态节点之间通过 
+ * lefttree 和 righttree 指针组织成和查询计划树结构类似的状态节点树,同时,每个状态节点都保存
+ * 了指向其对应的计划节点的指针(PlanState 类型中的 Plan 字段)
+ * 
+ * 具体关系见 execnodes_planstate.png
+ */
 typedef struct PlanState
 {
 	NodeTag		type;
@@ -1099,7 +1110,9 @@ typedef struct ScanState
 {
 	PlanState	ps;				/* its first field is NodeTag */
 	Relation	ss_currentRelation;
+	/* 记录扫描的位置, 关系等信息 */
 	HeapScanDesc ss_currentScanDesc;
+	/* 记录扫描到的结果 */
 	TupleTableSlot *ss_ScanTupleSlot;
 } ScanState;
 
@@ -1345,7 +1358,7 @@ typedef struct BitmapHeapScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 	ExprState  *bitmapqualorig;
-	TIDBitmap  *tbm;
+	TIDBitmap  *tbm; /* 位图 */
 	TBMIterator *tbmiterator;
 	TBMIterateResult *tbmres;
 	long		exact_pages;
@@ -1525,10 +1538,15 @@ typedef struct NamedTuplestoreScanState
  *		a RecursiveUnion node.  We locate the RecursiveUnion node
  *		during executor startup.
  * ----------------
+ * 
+ * 数据结构的关系参考 nodeRecursiveunion.png
  */
 typedef struct WorkTableScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
+	/* rustate 字段中记录了 RecursiveUnionState 结构的指针
+	 * 以便 WorkTableScan 在执行过程中可以从缓存结构中获取元组
+	 */
 	RecursiveUnionState *rustate;
 } WorkTableScanState;
 
@@ -1604,9 +1622,11 @@ typedef struct JoinState
 typedef struct NestLoopState
 {
 	JoinState	js;				/* its first field is NodeTag */
-	bool		nl_NeedNewOuter;
-	bool		nl_MatchedOuter;
-	TupleTableSlot *nl_NullInnerTupleSlot;
+	bool		nl_NeedNewOuter; /* 标记是否需要获取新元组 */
+	bool		nl_MatchedOuter; /* 标记当前左关系元组已经找到符合
+								  * 连接条件右关系元组
+								  */
+	TupleTableSlot *nl_NullInnerTupleSlot; /* 空元组用于 INNER 和 ANTI 连接 */
 } NestLoopState;
 
 /* ----------------

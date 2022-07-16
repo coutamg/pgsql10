@@ -70,6 +70,9 @@ static bool BitmapShouldInitializeSharedState(
  *
  *		Retrieve next tuple from the BitmapHeapScan node's currentRelation
  * ----------------------------------------------------------------
+ * 
+ * BitmapIndexScan 节点将输出位图而不是元组, 为了根据位图获取实际的元组, PostgreSQL 提
+ * 供了 BitmapHeapScan 节点从 BitmapIndexScan 输出的位图中获取元组
  */
 static TupleTableSlot *
 BitmapHeapNext(BitmapHeapScanState *node)
@@ -114,12 +117,14 @@ BitmapHeapNext(BitmapHeapScanState *node)
 	{
 		if (!pstate)
 		{
+			/* thm(位图)是否为空,如果为空则调用 MultiExecProcNode 从左子节点获取位图 */
 			tbm = (TIDBitmap *) MultiExecProcNode(outerPlanState(node));
 
 			if (!tbm || !IsA(tbm, TIDBitmap))
 				elog(ERROR, "unrecognized result from subplan");
 
 			node->tbm = tbm;
+			/* 调用 tbm_begin_iterate 初始化 tbmiterator */
 			node->tbmiterator = tbmiterator = tbm_begin_iterate(tbm);
 			node->tbmres = tbmres = NULL;
 
@@ -188,6 +193,9 @@ BitmapHeapNext(BitmapHeapScanState *node)
 		node->initialized = true;
 	}
 
+	/* 执行过程会利用thmiterator 遍历位图获取物理元组的偏移量,然后从对应的缓冲区中
+	 * 按照偏移量取出元组并返回
+	 */
 	for (;;)
 	{
 		Page		dp;
@@ -840,6 +848,7 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 
 	/*
 	 * open the base relation and acquire appropriate lock on it.
+	 * 根据节点中的 scanrelid 初始化扫描描述符 ss_currentScanDesc
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 
@@ -887,6 +896,9 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 	 * We do this last because the child nodes will open indexscans on our
 	 * relation's indexes, and we want to be sure we have acquired a lock on
 	 * the relation first.
+	 * 
+	 * BitmapHeapScan 有且仅有一个子节点(左子节点),显然这个左子节点必须是提供位图输出的
+	 * 计划节点
 	 */
 	outerPlanState(scanstate) = ExecInitNode(outerPlan(node), estate, eflags);
 

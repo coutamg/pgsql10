@@ -49,6 +49,8 @@ SubqueryNext(SubqueryScanState *node)
 
 	/*
 	 * Get the next tuple from the sub-query.
+	 *
+	 * 用 ExecProcNode 处理 subplan 来获得元组
 	 */
 	slot = ExecProcNode(node->subplan);
 
@@ -134,6 +136,8 @@ ExecInitSubqueryScan(SubqueryScan *node, EState *estate, int eflags)
 
 	/*
 	 * initialize subquery
+	 *
+	 * 使用 ExecInitNode 处理 SubqueryScan 的 subplan 字段指向的子计划树
 	 */
 	subquerystate->subplan = ExecInitNode(node->subplan, estate, eflags);
 

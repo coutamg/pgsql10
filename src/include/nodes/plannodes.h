@@ -40,10 +40,13 @@
  */
 // subquery_planner 接受到 Query 树后返回 Plan(计划树)
 // 计划树的结构如 PlannedStmt
+/* 参考 https://www.cnblogs.com/flying-tiger/p/8192790.html
+ * 与 querydesc 关系见 plannodes_querydesc.png
+ */
 typedef struct PlannedStmt
 {
 	NodeTag		type;
-	// 计划所对应的命令类型
+	// 计划所对应的命令类型, 语句类型
 	CmdType		commandType;	/* select|insert|update|delete|utility */
 
 	uint32		queryId;		/* query identifier (copied from Query) */
@@ -59,9 +62,9 @@ typedef struct PlannedStmt
 	bool		dependsOnRole;	/* is plan specific to current role? */
 
 	bool		parallelModeNeeded; /* parallel mode required to execute? */
-	// 计划树
+	// 查询计划树
 	struct Plan *planTree;		/* tree of Plan nodes */
-	// 范围表
+	// 查询涉及的范围表
 	List	   *rtable;			/* list of RangeTblEntry nodes */
 
 	/* rtable indexes of target relations for INSERT/UPDATE/DELETE */
@@ -199,11 +202,12 @@ typedef struct Plan
  * test (i.e., one that doesn't depend on any variables from the outer plan,
  * so needs to be evaluated only once).
  * ----------------
+ * 参考 nodeResult.png
  */
 typedef struct Result
 {
 	Plan		plan;
-	Node	   *resconstantqual;
+	Node	   *resconstantqual; /* 保存只需要计算一次的常量表达式 */
 } Result;
 
 /* ----------------
@@ -256,13 +260,15 @@ typedef struct ModifyTable
  *	 Append node -
  *		Generate the concatenation of the results of sub-plans.
  * ----------------
+ * 
+ * 与 AppendState 关系参考 nodeAppend.png
  */
 typedef struct Append
 {
 	Plan		plan;
 	/* RT indexes of non-leaf tables in a partition tree */
 	List	   *partitioned_rels;
-	List	   *appendplans;
+	List	   *appendplans; /* 存储子计划链表 */
 } Append;
 
 /* ----------------
@@ -291,6 +297,8 @@ typedef struct MergeAppend
  * The "outer" subplan is always the non-recursive term, and the "inner"
  * subplan is the recursive term.
  * ----------------
+ * 
+ * 数据结构的关系参考 nodeRecursiveunion.png
  */
 typedef struct RecursiveUnion
 {
@@ -341,6 +349,7 @@ typedef struct BitmapOr
 typedef struct Scan
 {
 	Plan		plan;
+	/* */
 	Index		scanrelid;		/* relid is index into the range table */
 } Scan;
 
@@ -401,12 +410,16 @@ typedef struct SampleScan
 typedef struct IndexScan
 {
 	Scan		scan;
+	/* 存储索引的 OID */
 	Oid			indexid;		/* OID of index to scan */
+	/* 存储扫描索引的条件 */
 	List	   *indexqual;		/* list of index quals (usually OpExprs) */
+	/* 用于存储没有处理的原始扫描条件链表 */
 	List	   *indexqualorig;	/* the same in original form */
 	List	   *indexorderby;	/* list of index ORDER BY exprs */
 	List	   *indexorderbyorig;	/* the same in original form */
 	List	   *indexorderbyops;	/* OIDs of sort ops for ORDER BY exprs */
+	/* 用于存储扫描的方向 */
 	ScanDirection indexorderdir;	/* forward or backward or don't care */
 } IndexScan;
 
@@ -475,6 +488,10 @@ typedef struct BitmapIndexScan
 typedef struct BitmapHeapScan
 {
 	Scan		scan;
+	/* 该字段与 IndexScan 节点的 indexqualorig 功能相同。当并发事务修改并提交了当前
+	 * 处理的元组时,需要重新扫描更新后的元组是否满足约束条件, 而不是重新获取位图, 因此将
+	 * 直接使用该表达式进行条件计算
+	 */
 	List	   *bitmapqualorig; /* index quals, in standard expr form */
 } BitmapHeapScan;
 
@@ -488,6 +505,7 @@ typedef struct BitmapHeapScan
 typedef struct TidScan
 {
 	Scan		scan;
+	/* 保存可以得到 ctid 的表达式链表 */
 	List	   *tidquals;		/* qual(s) involving CTID = something */
 } TidScan;
 
@@ -516,6 +534,9 @@ typedef struct SubqueryScan
 /* ----------------
  *		FunctionScan node
  * ----------------
+ * 
+ * 与 FunctionScanState 关系见 nodeFunctionscan.png
+ * 更多的是 RangeTblFunction 与 FunctionScanPerFuncState 之间关系
  */
 typedef struct FunctionScan
 {
@@ -527,6 +548,8 @@ typedef struct FunctionScan
 /* ----------------
  *		ValuesScan node
  * ----------------
+ * 
+ * ValuesScan 与 ValuesScanState 关系参考 nodeValuesscan.png
  */
 typedef struct ValuesScan
 {
@@ -547,6 +570,8 @@ typedef struct TableFuncScan
 /* ----------------
  *		CteScan node
  * ----------------
+ * 
+ * CteScan 与 CteScanState 关系见 nodeCtescan.png
  */
 typedef struct CteScan
 {
@@ -572,6 +597,7 @@ typedef struct NamedTuplestoreScan
 typedef struct WorkTableScan
 {
 	Scan		scan;
+	/* wParam 用于同 RecursiveUnion 节点间的通信 */
 	int			wtParam;		/* ID of Param representing work table */
 } WorkTableScan;
 
@@ -679,8 +705,10 @@ typedef struct CustomScan
 typedef struct Join
 {
 	Plan		plan;
+	/* join 的类型 */
 	JoinType	jointype;
 	bool		inner_unique;
+	/* join 的连接条件 */
 	List	   *joinqual;		/* JOIN quals (in addition to plan.qual) */
 } Join;
 
@@ -738,6 +766,7 @@ typedef struct MergeJoin
 typedef struct HashJoin
 {
 	Join		join;
+	/* 包括做 hash 的属性(列), 以及 hash 函数 */
 	List	   *hashclauses;
 } HashJoin;
 

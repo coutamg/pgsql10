@@ -528,6 +528,8 @@ PortalStart(Portal portal, ParamListInfo params,
 				 * 对于 PORTAL_ONE_SELECT 策略的 Portal, 其中包含一个简单 SELECT 类型的查询
 				 * 计划树,在 PortalStart 中将调用 ExecutorStart 进行 Executor(执行器)初始化,
 				 * 然后在 PortalRun 中调用 ExecutorRun 开始执行器的执行过程
+				 * 
+				 * 见 executor_stack.png
 				 */
 				ExecutorStart(queryDesc, myeflags);
 

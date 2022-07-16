@@ -26,6 +26,9 @@ static TupleTableSlot *CteScanNext(CteScanState *node);
  *
  *		This is a workhorse for ExecCteScan
  * ----------------------------------------------------------------
+ * 
+ * 首先查看 cte_table 指向的缓存中是否缓存元组, 如果有可直接获取, 否则需要先执
+ * 行 ctePlanld 指向的子计划获取元组
  */
 static TupleTableSlot *
 CteScanNext(CteScanState *node)
@@ -200,6 +203,9 @@ ExecInitCteScan(CteScan *node, EState *estate, int eflags)
 
 	/*
 	 * Find the already-initialized plan for the CTE query.
+	 *
+	 * 通过 ctePlanld 在 es_subplanstates 中找到对应的子计划执行状态树，并存储在
+	 * CteSeanState 的 cteplanstate 字段中
 	 */
 	scanstate->cteplanstate = (PlanState *) list_nth(estate->es_subplanstates,
 													 node->ctePlanId - 1);
@@ -210,15 +216,23 @@ ExecInitCteScan(CteScan *node, EState *estate, int eflags)
 	 * CTE.  This node will be the one that holds the shared state for all the
 	 * CTEs, particularly the shared tuplestore.
 	 */
+	/* 过 cteParam 在执行器全局状态的 es_param_exec_vals 中获取参数结构
+	 * ParamExecData
+	 */
 	prmdata = &(estate->es_param_exec_vals[node->cteParam]);
 	Assert(prmdata->execPlan == NULL);
 	Assert(!prmdata->isnull);
+	/* 若 ParamExecData 中 value(这里为 leader) 为 NULL，表示没有其他 CteScan 对此
+	 * CTE 初始化过存储结构
+	 */
 	scanstate->leader = castNode(CteScanState, DatumGetPointer(prmdata->value));
 	if (scanstate->leader == NULL)
 	{
 		/* I am the leader */
+		/* 将 leader 和 ParamExecData 的 value 赋值为指向当前 CteScanate 的指针 */
 		prmdata->value = PointerGetDatum(scanstate);
 		scanstate->leader = scanstate;
+		/* 初始化 CteScanState 的 cte_table 字段 */
 		scanstate->cte_table = tuplestore_begin_heap(true, false, work_mem);
 		tuplestore_set_eflags(scanstate->cte_table, scanstate->eflags);
 		scanstate->readptr = 0;
@@ -227,6 +241,11 @@ ExecInitCteScan(CteScan *node, EState *estate, int eflags)
 	{
 		/* Not the leader */
 		/* Create my own read pointer, and ensure it is at start */
+		/* ParamExeeData 中的 value 不为 NULL, 则将其值赋值给 leader, 让其指向第
+		 * 一个 CteScan 创建的 CteScanState, 而不为当前的 CteScan 初始化 cte_table.
+		 * 这样对应一个 CTE 全局只有一个元组缓存结构, 所有使用该 CTE 的 CteScan 都会共
+		 * 享该缓存
+		 */
 		scanstate->readptr =
 			tuplestore_alloc_read_pointer(scanstate->leader->cte_table,
 										  scanstate->eflags);

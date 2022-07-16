@@ -29,11 +29,18 @@
  *	containing utility statements; these must not be passed to the executor
  *	however.
  * ---------------------
+ * 与 plannedStmt 关系见 plannodes_querydesc.png
+ * 
+ * 执行器初始化时, ExecutorStart 会根据查询计划树构造执行器全局状态(estate)以及计划节点
+ * 执行状态(planstate)。在查询计划树的执行过程中,执行器将使用 planstate 来记录计划节点执
+ * 行状态和数据, 并使用全局状态记录中的 es_tupleTable 字段在节点间传递结果元组。执行器的
+ * 清理函数 ExecutorEnd 将回收执行器全局状态和计划节点执行状态
  */
 typedef struct QueryDesc
 {
 	/* These fields are provided by CreateQueryDesc */
 	CmdType		operation;		/* CMD_SELECT, CMD_UPDATE, etc. */
+	/* 查询计划树 */
 	PlannedStmt *plannedstmt;	/* planner's output (could be utility, too) */
 	const char *sourceText;		/* source text of the query */
 	Snapshot	snapshot;		/* snapshot to use for query */
@@ -45,7 +52,9 @@ typedef struct QueryDesc
 
 	/* These fields are set by ExecutorStart */
 	TupleDesc	tupDesc;		/* descriptor for result tuples */
+	/* 执行器全局状态 */
 	EState	   *estate;			/* executor's query-wide state */
+	/* 计划节点执行状态 */
 	PlanState  *planstate;		/* tree of per-plan-node state */
 
 	/* This field is set by ExecutorRun */

@@ -144,11 +144,14 @@ static void set_status_by_pages(int nsubxids, TransactionId *subxids,
  * XXX Think about issuing FADVISE_WILLNEED on pages that we will need,
  * but aren't yet in cache, as well as hinting pages not to fall out of
  * cache yet.
+ * 
+ * 参考: https://developer.aliyun.com/article/50982#slide-1
  */
 void
 TransactionIdSetTreeStatus(TransactionId xid, int nsubxids,
 						   TransactionId *subxids, XidStatus status, XLogRecPtr lsn)
 {
+	/* 获取 父事务 的 slru pageno */
 	int			pageno = TransactionIdToPage(xid);	/* get page of parent */
 	int			i;
 
@@ -158,6 +161,8 @@ TransactionIdSetTreeStatus(TransactionId xid, int nsubxids,
 	/*
 	 * See how many subxids, if any, are on the same page as the parent, if
 	 * any.
+	 * 
+	 * 检查有多少子事务与父事务的 clog 在同一个 page 中
 	 */
 	for (i = 0; i < nsubxids; i++)
 	{
@@ -167,11 +172,15 @@ TransactionIdSetTreeStatus(TransactionId xid, int nsubxids,
 
 	/*
 	 * Do all items fit on a single page?
+	 *
+	 * 所有的子事务和父事务都在同一个 page
 	 */
 	if (i == nsubxids)
 	{
 		/*
 		 * Set the parent and all subtransactions in a single call
+		 * 
+		 * 一次调用就把 父事务和子事务 记为 commit
 		 */
 		TransactionIdSetPageStatus(xid, nsubxids, subxids, status, lsn,
 								   pageno);
@@ -231,16 +240,23 @@ set_status_by_pages(int nsubxids, TransactionId *subxids,
 	{
 		int			num_on_page = 0;
 
+		/* 找出所有在同一个 pageno 的子事务, 包含父事务的 page 不走这里 */
 		while (TransactionIdToPage(subxids[i]) == pageno && i < nsubxids)
 		{
 			num_on_page++;
 			i++;
 		}
 
+		/* 把在同一个 page 的子事务设 
+		 *    第一次设置成 SUB_COMMITTED, 第二次设置成 COMMITTED
+		 *  主要是为了保证 父事务 commit 了, 所有的子事务也应该 commit, 即
+		 * 父子事务的原子性
+		 */
 		TransactionIdSetPageStatus(InvalidTransactionId,
 								   num_on_page, subxids + offset,
 								   status, lsn, pageno);
 		offset = i;
+		/* 下一个 page */
 		pageno = TransactionIdToPage(subxids[offset]);
 	}
 }
@@ -284,6 +300,9 @@ TransactionIdSetPageStatus(TransactionId xid, int nsubxids,
 	 * If we are updating commits on the page with the top-level xid that
 	 * could break atomicity, so we subcommit the subxids first before we mark
 	 * the top-level commit.
+	 * 
+	 * 如果当前的 page 包含父事务, 则 xid 是父事务的 xid, 否则 xid 是无效的
+	 * 如果一个 page 上全是子事务的 xid, 则不会走下面逻辑
 	 */
 	if (TransactionIdIsValid(xid))
 	{

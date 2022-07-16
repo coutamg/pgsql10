@@ -92,6 +92,8 @@ typedef struct ParamListInfoData
  *	  result value is needed.)	Otherwise the value is assumed to be valid
  *	  when needed.
  * ----------------
+ * 
+ * 数据结构的关系参考 nodeRecursiveunion.png
  */
 
 typedef struct ParamExecData

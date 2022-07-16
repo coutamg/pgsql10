@@ -118,9 +118,14 @@ ExecScanFetch(ScanState *node,
  *		  -- the relation indicated is opened for scanning so that the
  *			 "cursor" is positioned before the first qualifying tuple.
  * ----------------------------------------------------------------
+ * 
+ * 数据结构参考 execScan.png
  */
 TupleTableSlot *
-ExecScan(ScanState *node,
+ExecScan(ScanState *node, /* 状态节点 */
+		 /* 获取扫描元组的函数指针(AccessMtd,由于每一种扫描节点扫描的对象不同,因
+		  * 此函数都不同)
+		  */
 		 ExecScanAccessMtd accessMtd,	/* function returning a tuple */
 		 ExecScanRecheckMtd recheckMtd)
 {
@@ -160,7 +165,10 @@ ExecScan(ScanState *node,
 	for (;;)
 	{
 		TupleTableSlot *slot;
-
+		/* 迭代地扫描对象,每次执行返回一条结果。ExecScan 会使用 acessMtd 获取元组,存放
+		 * 在 ScanState 的 ss_ScanTupleSlot 中,然后进行过滤条件判断和投影操作,最终返
+		 * 回元组
+		 */
 		slot = ExecScanFetch(node, accessMtd, recheckMtd);
 
 		/*
@@ -188,6 +196,9 @@ ExecScan(ScanState *node,
 		 * check for non-null qual here to avoid a function call to ExecQual()
 		 * when the qual is null ... saves only a few cycles, but they add up
 		 * ...
+		 * 
+		 * 根据计划节点中的查询条件和投影要求对得到的元组进行条件检查和投影操作,最后将满足要
+		 * 求的结果元组返回
 		 */
 		if (qual == NULL || ExecQual(qual, econtext))
 		{

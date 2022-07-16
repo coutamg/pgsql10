@@ -34,6 +34,9 @@ static TupleTableSlot *ValuesNext(ValuesScanState *node);
 /* ----------------------------------------------------------------
  *						Scan Support
  * ----------------------------------------------------------------
+ * 
+ * 在 PostgreSQL 中，可以使用 VALUES 子句给出一系列元组，ValuesScan 节点可以对
+ * VALUES 子句给出的元组集合进行扫描（INSERT 语句中的 VALUES 子句除外）
  */
 
 /* ----------------------------------------------------------------
@@ -61,6 +64,8 @@ ValuesNext(ValuesScanState *node)
 
 	/*
 	 * Get the next tuple. Return NULL if no more tuples.
+	 *
+	 * 通过 curr_idx 从 exptlists 中获取需要处理的表达式，并计算出结果元组返回
 	 */
 	if (ScanDirectionIsForward(direction))
 	{
@@ -258,13 +263,18 @@ ExecInitValuesScan(ValuesScan *node, EState *estate, int eflags)
 	/*
 	 * Other node-specific setup
 	 */
+	/* curr_idx 用于存储数组中的偏移量 */
 	scanstate->curr_idx = -1;
+	/* array_len 记录数组长度 */
 	scanstate->array_len = list_length(node->values_lists);
 
 	/* convert list of sublists into array of sublists for easy addressing */
 	scanstate->exprlists = (List **)
 		palloc(scanstate->array_len * sizeof(List *));
 	i = 0;
+	/* 处理 values_lists 中的表达式生成 Values 表达式，并存储在 ValuesScanState 的
+	 * exprlists 数组中
+	 */
 	foreach(vtl, node->values_lists)
 	{
 		scanstate->exprlists[i++] = (List *) lfirst(vtl);

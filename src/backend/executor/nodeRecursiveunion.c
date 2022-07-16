@@ -65,6 +65,9 @@ build_hash_table(RecursiveUnionState *rustate)
  * 2.5 append WT to RT
  * 2.6 go back to 2.2
  * ----------------------------------------------------------------
+ * 
+ * 执行流程可以参考 nodeRecursiveunion_exec.png
+ * 参考 https://www.cnblogs.com/flying-tiger/p/8378677.html
  */
 static TupleTableSlot *
 ExecRecursiveUnion(PlanState *pstate)
@@ -83,12 +86,14 @@ ExecRecursiveUnion(PlanState *pstate)
 	{
 		for (;;)
 		{
+			/* 执行左子节点 plan */
 			slot = ExecProcNode(outerPlan);
 			if (TupIsNull(slot))
 				break;
 			if (plan->numCols > 0)
 			{
 				/* Find or build hashtable entry for this tuple's group */
+				/* 如果需要去重,则需要把返回的元组加入到 Hash表(hashtable)中 */
 				LookupTupleHashEntry(node->hashtable, slot, &isnew);
 				/* Must reset temp context after each hashtable lookup */
 				MemoryContextReset(node->tempContext);
@@ -97,8 +102,10 @@ ExecRecursiveUnion(PlanState *pstate)
 					continue;
 			}
 			/* Each non-duplicate tuple goes to the working table ... */
+			/* 将初始集存储在 working_table(图中缩写为 WT)指向的元组缓存结构中 */
 			tuplestore_puttupleslot(node->working_table, slot);
 			/* ... and to the caller */
+			/* 将获取的元组直接返回 */
 			return slot;
 		}
 		node->recursing = true;
@@ -107,6 +114,9 @@ ExecRecursiveUnion(PlanState *pstate)
 	/* 2. Execute recursive term */
 	for (;;)
 	{
+		/* 当处理完毕所有的左子节点计划后,会执行右子节点计划以获取结果元组
+		 * 其中, 右子节点计划中的 WorkTableScan 会以 working_table 为扫描对象
+		 */
 		slot = ExecProcNode(innerPlan);
 		if (TupIsNull(slot))
 		{
@@ -118,6 +128,10 @@ ExecRecursiveUnion(PlanState *pstate)
 			tuplestore_end(node->working_table);
 
 			/* intermediate table becomes working table */
+			/* 每当 working_table 被扫描完毕, RecursiveUnion 节点的执行流程会将
+			 * intermediate_table 赋值给 working_table 然后再次执行右子节点计划
+			 * 获取元组, 直到无元组输出为止
+			 */
 			node->working_table = node->intermediate_table;
 
 			/* create new empty intermediate table */
@@ -136,6 +150,9 @@ ExecRecursiveUnion(PlanState *pstate)
 		if (plan->numCols > 0)
 		{
 			/* Find or build hashtable entry for this tuple's group */
+			/* 如果需要去重,右子节点计划的所有输出也会被存入同一个 Hash 表(hashtable),
+			 * 若重复则不会输出
+			 */
 			LookupTupleHashEntry(node->hashtable, slot, &isnew);
 			/* Must reset temp context after each hashtable lookup */
 			MemoryContextReset(node->tempContext);
@@ -146,6 +163,7 @@ ExecRecursiveUnion(PlanState *pstate)
 
 		/* Else, tuple is good; stash it in intermediate table ... */
 		node->intermediate_empty = false;
+		/* 右子节点扫描的结果缓存在另一个元组存储结构 intermediate_table */
 		tuplestore_puttupleslot(node->intermediate_table, slot);
 		/* ... and return it */
 		return slot;

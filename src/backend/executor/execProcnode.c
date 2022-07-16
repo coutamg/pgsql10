@@ -135,6 +135,20 @@ static TupleTableSlot *ExecProcNodeInstr(PlanState *node);
  *		Returns a PlanState node corresponding to the given Plan node.
  * ------------------------------------------------------------------------
  */
+/*
+ * 在 PostgreSQL 的实现中,上层函数通过 ExecInitNode、ExecProcNode、ExecEndNode 三个
+ * 接口函数来统一对节点进行初始化、执行和清理,这三个函数会根据所处理节点的实际类型调用相应的
+ * 初始化、执行、清理函数,例如,若 ExecInitNode 处理的是 SeqScan 节点,则调用 SeqScan 节
+ * 点的初始化函数 ExecInitSeqScan 来实际完成该节点的初始化工作。这三个函数也是递归执行的:
+ * 对根节点的初始化会递归地对下层的节点进行初始化;在根节点调用 ExecProcNode 获取结果时,也
+ * 会递归地对下层节点进行执行以获取上层节点所需的输入数据;执行完成后只需对根节点进行清理,下层
+ * 节点也会被递归地清理.
+ * 
+ * 查询计划树上的节点就构成了物理元组到执行结果的管道,因此查询计划树的执行过程可以看成是拉动元组
+ * 穿过管道的过程。PostgreSQL 采用了一次一元组的执行模式,每个节点被执行一次仅向上层节点返回一条
+ * 元组。因此,对于整个查询计划树的执行也是一次一元组的模
+式
+ */
 PlanState *
 ExecInitNode(Plan *node, EState *estate, int eflags)
 {

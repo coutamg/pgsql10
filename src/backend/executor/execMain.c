@@ -183,6 +183,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
 	/*
 	 * Build EState, switch into per-query memory context for startup.
+	 * 构造 EState
 	 */
 	estate = CreateExecutorState();
 	queryDesc->estate = estate;
@@ -260,6 +261,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
 	/*
 	 * Initialize the plan state tree
+	 * 查询计划树的初始化(即构造对应的 PlanState 树, 由 InitPlan 函数完成)
 	 */
 	InitPlan(queryDesc, eflags);
 
@@ -360,6 +362,7 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 			elog(ERROR, "can't re-execute query flagged for single execution");
 		queryDesc->already_executed = true;
 
+		/* 完成查询计划的执行 */
 		ExecutePlan(estate,
 					queryDesc->planstate,
 					queryDesc->plannedstmt->parallelModeNeeded,
@@ -491,7 +494,10 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 	 * Switch into per-query memory context to run ExecEndPlan
 	 */
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
-
+	/* ExecEndPlan 处理执行状态树根节点释放已分配的资源,最后释放执行器全局状态 EState 完成
+	 * 整个执行过程
+	 * 参考 executor_stack.png
+	 */
 	ExecEndPlan(queryDesc->planstate, estate);
 
 	/* do away with our snapshots */
@@ -1709,6 +1715,9 @@ ExecutePlan(EState *estate,
 
 	/*
 	 * Loop until we've processed the proper number of tuples from the plan.
+	 *
+	 * pull 模型的根节点, 通过 ExecProcNode(valcano 中的 next) 不断的从左右孩子 node
+	 * 拉取数据, 一次拉取一个 tuple
 	 */
 	for (;;)
 	{
@@ -1745,6 +1754,7 @@ ExecutePlan(EState *estate,
 		/*
 		 * If we are supposed to send the tuple somewhere, do so. (In
 		 * practice, this is probably always the case at this point.)
+		 * 往目的发送搜到的 tuple
 		 */
 		if (sendTuples)
 		{
@@ -1769,6 +1779,8 @@ ExecutePlan(EState *estate,
 		 * check our tuple count.. if we've processed the proper number then
 		 * quit, else loop again and process more tuples.  Zero numberTuples
 		 * means no limit.
+		 * 
+		 * 处理 limit 条件
 		 */
 		current_tuple_count++;
 		if (numberTuples && numberTuples == current_tuple_count)

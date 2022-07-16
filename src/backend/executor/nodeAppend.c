@@ -150,7 +150,7 @@ ExecInitAppend(Append *node, EState *estate, int eflags)
 	appendstate->ps.state = estate;
 	appendstate->ps.ExecProcNode = ExecAppend;
 	appendstate->appendplans = appendplanstates;
-	appendstate->as_nplans = nplans;
+	appendstate->as_nplans = nplans; /* 记录 Append 节点中子计划链表的长度 */
 
 	/*
 	 * Miscellaneous initialization
@@ -168,6 +168,9 @@ ExecInitAppend(Append *node, EState *estate, int eflags)
 	/*
 	 * call ExecInitNode on each of the plans to be executed and save the
 	 * results into the array "appendplans".
+	 * 
+	 * 初始化子计划链表中的每一个子计划,并将它们的状态记录节点组织成一个数组,使 AppendState 节
+	 * 点的 appendplans 字段指向该数组
 	 */
 	i = 0;
 	foreach(lc, node->appendplans)
@@ -186,6 +189,7 @@ ExecInitAppend(Append *node, EState *estate, int eflags)
 
 	/*
 	 * initialize to scan first subplan
+	 * as_whichplan 则用于在执行中指示当前处理的子计划在链表中的偏移量
 	 */
 	appendstate->as_whichplan = 0;
 	exec_append_initialize_next(appendstate);
@@ -213,6 +217,8 @@ ExecAppend(PlanState *pstate)
 
 		/*
 		 * figure out which subplan we are currently processing
+		 * 
+		 * 从 as_whichplan 标记的子计划开始执行
 		 */
 		subnode = node->appendplans[node->as_whichplan];
 
@@ -220,7 +226,7 @@ ExecAppend(PlanState *pstate)
 		 * get a tuple from the subplan
 		 */
 		result = ExecProcNode(subnode);
-
+		/* 如果返回的元组非空,则直接返回结果 */
 		if (!TupIsNull(result))
 		{
 			/*
@@ -235,11 +241,16 @@ ExecAppend(PlanState *pstate)
 		 * Go on to the "next" subplan in the appropriate direction. If no
 		 * more subplans, return the empty slot set up for us by
 		 * ExecInitAppend.
+		 * 
+		 * 当前子计划返回的是空元组, 那么会将 as_whichplan 移动到下一个子计划(因为执行过
+		 * 程可以向前和向后扫描,向前扫描为加1,反之减1), 并继续执行当前子计划
 		 */
 		if (ScanDirectionIsForward(node->ps.state->es_direction))
 			node->as_whichplan++;
 		else
 			node->as_whichplan--;
+		
+		/* 已经没有下一个子计划可以处理,则直接返回空元组 */
 		if (!exec_append_initialize_next(node))
 			return ExecClearTuple(node->ps.ps_ResultTupleSlot);
 
@@ -270,6 +281,9 @@ ExecEndAppend(AppendState *node)
 
 	/*
 	 * shut down each of the subscans
+	 *
+	 * 由于没有左右孩子节点,Append 节点清理工作(ExecEndAppend 函数)不需要递归调
+	 * 用左右子节点的清理过程,而是扫描整个子计划链表,依次调用子计划的清理函数
 	 */
 	for (i = 0; i < nplans; i++)
 		ExecEndNode(appendplans[i]);

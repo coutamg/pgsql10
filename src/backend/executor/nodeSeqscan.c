@@ -45,6 +45,7 @@ static TupleTableSlot *SeqNext(SeqScanState *node);
  *
  *		This is a workhorse for ExecSeqScan
  * ----------------------------------------------------------------
+ * 参考 http://blog.itpub.net/6906/viewspace-2374802/
  */
 static TupleTableSlot *
 SeqNext(SeqScanState *node)
@@ -68,6 +69,9 @@ SeqNext(SeqScanState *node)
 		/*
 		 * We reach here if the scan is not parallel, or if we're executing a
 		 * scan that was intended to be parallel serially.
+		 * 
+		 * 利用 ss_currentRelation 信息调用 heap_beginscan 初始化扫描描述符
+		 * ss_currentScanDesc
 		 */
 		scandesc = heap_beginscan(node->ss.ss_currentRelation,
 								  estate->es_snapshot,
@@ -77,6 +81,7 @@ SeqNext(SeqScanState *node)
 
 	/*
 	 * get the next tuple from the table
+	 * SeqNext 函数将通过存储模块提供的函数 heap_getnext 获取下一条元组并返回
 	 */
 	tuple = heap_getnext(scandesc, direction);
 
@@ -146,11 +151,13 @@ InitScanRelation(SeqScanState *node, EState *estate, int eflags)
 	/*
 	 * get the relation object id from the relid'th entry in the range table,
 	 * open that relation and acquire appropriate lock on it.
+	 * 
+	 * 通过计划节点中 scanrelid 字段的信息获取被扫描对象的 RelationData 结构
 	 */
 	currentRelation = ExecOpenScanRelation(estate,
 										   ((SeqScan *) node->ss.ps.plan)->scanrelid,
 										   eflags);
-
+	/* RelationData 链接在 ss_currentRelation 字段中 */
 	node->ss.ss_currentRelation = currentRelation;
 
 	/* and report the scan tuple slot's rowtype */

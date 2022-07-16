@@ -1372,11 +1372,15 @@ typedef struct RangeTblFunction
 {
 	NodeTag		type;
 
+	/* 存储函数调用信息 */
 	Node	   *funcexpr;		/* expression tree for func call */
 	int			funccolcount;	/* number of columns it contributes to RTE */
 	/* These fields record the contents of a column definition list, if any: */
+	/* 函数结果的列名字段 */
 	List	   *funccolnames;	/* column names (list of String) */
+	/* 列类型字段 */
 	List	   *funccoltypes;	/* OID list of column type OIDs */
+	/* typemod */
 	List	   *funccoltypmods; /* integer list of column typmods */
 	List	   *funccolcollations;	/* OID list of column collation OIDs */
 	/* This is set during planning for use by the executor: */

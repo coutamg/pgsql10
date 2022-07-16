@@ -1463,7 +1463,7 @@ convert_ANY_sublink_to_join(PlannerInfo *root, // 查询优化模块的上下文
  * except that we also support the case where the caller has found NOT EXISTS,
  * so we need an additional input parameter "under_not".
  */
-/* EXISTS 的查询优化参考 数据库查询优化器艺术 p27
+/* EXISTS 的查询优化参考 <数据库查询优化器艺术> p27
  *
  * EXISTS 对于子查询而言,其结果值是布尔值; 如果 subquery 有返回值, 则整个 EXISTS(subquery)
  * 的值为 TRUE,否则为 FALSE

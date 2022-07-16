@@ -88,6 +88,11 @@ FunctionNext(FunctionScanState *node)
 		 * If first time through, read all tuples from function and put them
 		 * in a tuplestore. Subsequent calls just fetch tuples from
 		 * tuplestore.
+		 * 
+		 * 函数首先判断 tstore 是否为空(首次执行时为空), 如果为空则执行函数生成所有结果
+		 * 集并存储在 tstore 中
+		 * 
+		 * 此后每次执行节点将获取结果集中的一个元组
 		 */
 		if (tstore == NULL)
 		{
@@ -352,12 +357,16 @@ ExecInitFunctionScan(FunctionScan *node, EState *estate, int eflags)
 	i = 0;
 	foreach(lc, node->functions)
 	{
+		/* RangeTblFunction 与 FunctionScanPerFuncState 之间关系见
+		 * nodeFunctionscan.png
+		 */
 		RangeTblFunction *rtfunc = (RangeTblFunction *) lfirst(lc);
 		Node	   *funcexpr = rtfunc->funcexpr;
 		int			colcount = rtfunc->funccolcount;
 		FunctionScanPerFuncState *fs = &scanstate->funcstates[i];
 		TypeFuncClass functypclass;
 		Oid			funcrettype;
+		/* 返回元组的描述符存储在 tupdesc 中 */
 		TupleDesc	tupdesc;
 
 		fs->setexpr =
@@ -370,6 +379,7 @@ ExecInitFunctionScan(FunctionScan *node, EState *estate, int eflags)
 		 * do that.  NULL means that we have not called the function yet (or
 		 * need to call it again after a rescan).
 		 */
+		/* 此时用于存储函数结果集的 tstore 字段为 NULL */
 		fs->tstore = NULL;
 		fs->rowcount = -1;
 

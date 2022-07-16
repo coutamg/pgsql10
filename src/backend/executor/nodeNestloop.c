@@ -57,6 +57,39 @@
  *			   are prepared to return the first tuple.
  * ----------------------------------------------------------------
  */
+/*
+ * FOR each tuple r in R DO
+ *     IF r and s join to make a tuple t THEN
+ *	       output t;
+ * 
+ * 为了迭代实现此方法, NestLoopState 中定义了字段 nl_NeedNewOuter 和 nl_MatchedOuter.
+ * 当元组处于内层循环时, nl_NeedNewOuter 为 false,内层循环结束时 nl_NeedNewOuter 设置
+ * 为 true
+ * 
+ * 为了能够处理 Left Outer Join 和 Anti Join, 需要知道内层循环是否找到了满足连接条件的内层
+ * 元组,此信息由 nl_MatchedOuter 记录,当内层循环找到符合条件的元组时将其标记为 true.
+ * 
+ * NestLoop 节点的初始化工作需要为 Left Outer Join 和 Anti Join 两种可能用到空元组的情况构
+ * 造空元组,并存放在 NestLoopState 的 nl_NullInnerTupleSlot 中,还将进行如下两个操作:
+ *   1)将 nl_NeedNewOuter 标记为 true,表示需要获取左子节点元组。
+ *   2)将 nl_MatchedOuter 标记为 false,表示没有找到与当前左子节点元组匹配的右子节点元组.
+ * 
+ * NestLoop 执行过程需要循环执行如下操作:
+ *	 1) 如果 nl_NeedNew Outer 为true,则从左子节点获取元组,若获取的元组为 NULL 则返回空元
+ *	    组并结束执行过程。如果 nl_NeedNewOuter为 false,则继续进行步骤2。
+ *   2) 从右子节点获取元组,若为 NULL 表明内层扫描完成,设置 nl_NeedNewOuter 为 true,跳过
+ *      步骤3继续循环。
+ *   3) 判断右子节点元组是否与当前左子节点元组符合连接条件,若符合则返回连接结果。
+ * 
+ * 以上过程能够完成 Inner Join 的递归执行过程。但是为了支持其他几种连接则还需要如下两个
+ * 特殊的处理:
+ *   1) 当找到符合连接条件的元组后将 nl_MatchedOuter 标记为 true。内层扫描完毕时,通过判断
+ *      nl_MatchedOuter 即可知道是否已经找到满足连接条件的元组,在处理 Left Outer Join 和
+ * 		Anti Join 时需要进行与空元组的连接,然后将 nl_MatchedOuter 设置为 false。
+ *   2) 当找到满足匹配条件的元组后,对于 Semi Join 和 Anti Join 方法需要设置 nl_NeedNewOuter
+ *      为 true。区别在于 Anti Join 需要不满足连接条件才能返回,所以要跳过返回连接结果继续执行
+ *      循环。
+ */
 static TupleTableSlot *
 ExecNestLoop(PlanState *pstate)
 {
@@ -96,20 +129,27 @@ ExecNestLoop(PlanState *pstate)
 	 * qualifying join tuple.
 	 */
 	ENL1_printf("entering main loop");
-
+	/* 每一次循环都通过 ExecProcNode 函数从计划节点状态树中获取一个元组,然后对该
+	 * 元组进行相应的处理(增删查改),然后返回处理的结果。当ExecProcNode 从计划节点
+	 * 状态树中再也取不到有效的元组时结束循环过程
+	 */
 	for (;;)
 	{
 		/*
 		 * If we don't have an outer tuple, get the next one and reset the
 		 * inner scan.
+		 * 
+		 * 是否需要左孩子节点数据
 		 */
 		if (node->nl_NeedNewOuter)
 		{
 			ENL1_printf("getting new outer tuple");
+			/* 执行左孩子节点获取输入数据 */
 			outerTupleSlot = ExecProcNode(outerPlan);
 
 			/*
 			 * if there are no more outer tuples, then the join is complete..
+			 * 若获取的元组为 NULL 则返回空元组并结束执行过程
 			 */
 			if (TupIsNull(outerTupleSlot))
 			{
@@ -119,12 +159,17 @@ ExecNestLoop(PlanState *pstate)
 
 			ENL1_printf("saving new outer tuple information");
 			econtext->ecxt_outertuple = outerTupleSlot;
+			/* 结束外层循环进入内层循环 */
 			node->nl_NeedNewOuter = false;
+			/* 内层循环结束后重制 */
 			node->nl_MatchedOuter = false;
 
 			/*
 			 * fetch the values of any outer Vars that must be passed to the
 			 * inner scan, and store them in the appropriate PARAM_EXEC slots.
+			 * 
+			 * 参考 https://www.cnblogs.com/flying-tiger/p/8331425.html
+			 * https://blog.csdn.net/cuichao1900/article/details/100394724
 			 */
 			foreach(lc, nl->nestParams)
 			{
@@ -157,15 +202,20 @@ ExecNestLoop(PlanState *pstate)
 		 */
 		ENL1_printf("getting new inner tuple");
 
+		/* 从右子节点获取元组 */
 		innerTupleSlot = ExecProcNode(innerPlan);
 		econtext->ecxt_innertuple = innerTupleSlot;
 
+		/* 判断内层循环扫描完成, 扫描完成时 tuple is null */
 		if (TupIsNull(innerTupleSlot))
 		{
 			ENL1_printf("no inner tuple, need new outer tuple");
-
+			/* 内层循环扫完, 结束内层循环进入外层循环 */
 			node->nl_NeedNewOuter = true;
 
+			/* 内层扫描完毕时,通过判断 nl_MatchedOuter 即可知道是否已经找到满足连接条件的
+			 * 元组 
+			 */
 			if (!node->nl_MatchedOuter &&
 				(node->js.jointype == JOIN_LEFT ||
 				 node->js.jointype == JOIN_ANTI))
@@ -210,12 +260,14 @@ ExecNestLoop(PlanState *pstate)
 		 * must pass to actually return the tuple.
 		 */
 		ENL1_printf("testing qualification");
-
+		/* 判断右子节点元组是否与当前左子节点元组符合连接条件 */
 		if (ExecQual(joinqual, econtext))
 		{
+			/* 找到了满足连接条件的内层元组 */
 			node->nl_MatchedOuter = true;
 
 			/* In an antijoin, we never return a matched tuple */
+			/* Anti Join 需要不满足连接条件才能返回, 所以要跳过返回连接结果继续执行 */
 			if (node->js.jointype == JOIN_ANTI)
 			{
 				node->nl_NeedNewOuter = true;
@@ -226,6 +278,8 @@ ExecNestLoop(PlanState *pstate)
 			 * If we only need to join to the first matching inner tuple, then
 			 * consider returning this one, but after that continue with next
 			 * outer tuple.
+			 * 
+			 * 处理 Semi Join 有一个匹配即可
 			 */
 			if (node->js.single_match)
 				node->nl_NeedNewOuter = true;
@@ -258,6 +312,17 @@ ExecNestLoop(PlanState *pstate)
 /* ----------------------------------------------------------------
  *		ExecInitNestLoop
  * ----------------------------------------------------------------
+ * 
+ * 由于 NestLoop 节点有两个子节点,因此 ExecInitNestLoop 会先调用 ExecInitNode 对其
+ * 左子节点进行初始化, 并将其返回的 PlanState 结构指针存放在为 NestLoop 构造的 NestLoopState
+ * 结构的 lefttree 字段中; 然后以同样的方式初始化右子节点,将返回的 PlanState 结构指针存放于
+ * NestLoopState 的 righttree 字段中。同样,如果左右子节点还有下层节点,初始化过程将以完全相同的
+ * 方式递归下去,直到到达查询计划树的叶子节点。而在初始化过程中构造的 PlanState 子树也会层层返回
+ * 给上层节点,并被链接在上层节点的 PlanState 结构中,最终构造出完整的 PlanState 树
+ * 
+ * 参考 ExecInitxxx.png
+ * 
+ * 例如: nodeNestloop.png
  */
 NestLoopState *
 ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
@@ -276,6 +341,7 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate = makeNode(NestLoopState);
 	nlstate->js.ps.plan = (Plan *) node;
 	nlstate->js.ps.state = estate;
+	/* 查询计划的执行函数 */
 	nlstate->js.ps.ExecProcNode = ExecNestLoop;
 
 	/*
@@ -303,15 +369,20 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	 * inner child, because it will always be rescanned with fresh parameter
 	 * values.
 	 */
+	/* 调用 ExecInitNode 对其左子节点进行初始化, 并将其返回的 PlanState 结构指针存放在
+	 * 为 NestLoop 构造的 NestLoopState 结构的 lefttree 字段中
+	 */
 	outerPlanState(nlstate) = ExecInitNode(outerPlan(node), estate, eflags);
 	if (node->nestParams == NIL)
 		eflags |= EXEC_FLAG_REWIND;
 	else
 		eflags &= ~EXEC_FLAG_REWIND;
+	/* 对右子节点初始化 */
 	innerPlanState(nlstate) = ExecInitNode(innerPlan(node), estate, eflags);
 
 	/*
 	 * tuple table initialization
+	 * 在 Estate.es_tupleTable 中申请结果元组存储结构
 	 */
 	ExecInitResultTupleSlot(estate, &nlstate->js.ps);
 
@@ -327,6 +398,7 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 		case JOIN_INNER:
 		case JOIN_SEMI:
 			break;
+		/* Left Outer Join 和 Anti Join 两种可能用到空元组的情况构造空元组 */
 		case JOIN_LEFT:
 		case JOIN_ANTI:
 			nlstate->nl_NullInnerTupleSlot =
@@ -347,7 +419,9 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	/*
 	 * finally, wipe the current outer tuple clean.
 	 */
+	/* 将 nl_NeedNewOuter 标记为 true,表示需要获取左子节点元组 */
 	nlstate->nl_NeedNewOuter = true;
+	/* 将 nl_MatchedOuter 标记为 false,表示没有找到与当前左子节点元组匹配的右子节点元组 */
 	nlstate->nl_MatchedOuter = false;
 
 	NL1_printf("ExecInitNestLoop: %s\n",

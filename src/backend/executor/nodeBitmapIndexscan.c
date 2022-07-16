@@ -313,6 +313,9 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 
 	/*
 	 * Initialize scan descriptor.
+	 *
+	 * 使用 index_beginscan_bitmap 函数,该函数将调用 index_getbitmap 生成位图,并将其
+	 * 存放在执行状态记录节点的 biss_result 字段中
 	 */
 	indexstate->biss_ScanDesc =
 		index_beginscan_bitmap(indexstate->biss_RelationDesc,

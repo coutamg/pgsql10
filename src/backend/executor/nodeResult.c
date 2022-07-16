@@ -78,12 +78,16 @@ ExecResult(PlanState *pstate)
 
 	/*
 	 * check constant qualifications like (2 > 1), if not already done
+	 *
+	 * 判断 rs_checkqual 是否为真, 为真表示需要进行常量表达式计算
 	 */
 	if (node->rs_checkqual)
 	{
 		bool		qualResult = ExecQual(node->resconstantqual, econtext);
 
+		/* 计算完成后将 rs_checkqual 设置为假,下次执行不会再进行计算 */
 		node->rs_checkqual = false;
+		/* 常量表达式计算结果为假,表示没有满足条件的结果,则 Result 节点直接返回NULL */
 		if (!qualResult)
 		{
 			node->rs_done = true;
@@ -103,6 +107,7 @@ ExecResult(PlanState *pstate)
 	 * called, OR that we failed the constant qual check. Either way, now we
 	 * are through.
 	 */
+	/* 常量表达式计算结果为真,则会检查是否有左子树,有则从其中获取元组 */
 	while (!node->rs_done)
 	{
 		outerPlan = outerPlanState(node);
@@ -129,10 +134,14 @@ ExecResult(PlanState *pstate)
 			 * if we don't have an outer plan, then we are just generating the
 			 * results from a constant target list.  Do it only once.
 			 */
+			/* 没有左子树表示为 VALUES 子句, 则直接设置 rs_done 为真,因为只有一个元组需要
+			 * 输出(这里的 VALUES 子句中只允许有一个元组)
+			 */
 			node->rs_done = true;
 		}
 
 		/* form the result tuple using ExecProject(), and return it */
+		/* 最后对结果元组执行投影操作并返回 */
 		return ExecProject(node->ps.ps_ProjInfo);
 	}
 
@@ -194,7 +203,9 @@ ExecInitResult(Result *node, EState *estate, int eflags)
 	resstate->ps.state = estate;
 	resstate->ps.ExecProcNode = ExecResult;
 
+	/* result 节点是否已经处理完所有元组 */
 	resstate->rs_done = false;
+	/* 检查是否有常量表达式,有则将执行状态节点的 rs_checkqual 设置为真,否则设置为假 */
 	resstate->rs_checkqual = (node->resconstantqual == NULL) ? false : true;
 
 	/*
@@ -225,6 +236,7 @@ ExecInitResult(Result *node, EState *estate, int eflags)
 	/*
 	 * we don't use inner plan
 	 */
+	/* 保证无右子节点 */
 	Assert(innerPlan(node) == NULL);
 
 	/*

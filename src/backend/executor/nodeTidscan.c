@@ -59,10 +59,14 @@ static TupleTableSlot *TidNext(TidScanState *node);
  *
  * CURRENT OF is a special case that we can't compile usefully;
  * just drop it into the TidExpr list as-is.
+ * 
+ * 标识元组物理位置的数据类型被称作 TID(Tuple Identifier), 一个 TID由块号和块内
+ * 偏移量组成,系统属性 ctid 被定义为此种类型
  */
 static void
 TidExprListCreate(TidScanState *tidstate)
 {
+	/* TidScan 与 TidScanState 参考 nodeTidscan.png */
 	TidScan    *node = (TidScan *) tidstate->ss.ps.plan;
 	ListCell   *l;
 
@@ -81,6 +85,7 @@ TidExprListCreate(TidScanState *tidstate)
 
 			arg1 = get_leftop(expr);
 			arg2 = get_rightop(expr);
+			/* 调用 ExecInitExpr 初始化 tidquals 中的表达式 */
 			if (IsCTIDVar(arg1))
 				tidexpr->exprstate = ExecInitExpr((Expr *) arg2,
 												  &tidstate->ss.ps);
@@ -324,6 +329,10 @@ TidNext(TidScanState *node)
 
 	/*
 	 * First time through, compute the list of TIDs to be visited
+	 *
+	 * 需要通过计算 TidScanState 节点的 tss_tidquals 链表中的表达式来构造
+	 * tss_TidList 数组,该数组中存放的是一系列的 ctid, tss_NumTids 用于记
+	 * 录数组的长度
 	 */
 	if (node->tss_TidList == NULL)
 		TidListEval(node);
@@ -343,6 +352,9 @@ TidNext(TidScanState *node)
 	bBackward = ScanDirectionIsBackward(direction);
 	if (bBackward)
 	{
+		/* tss_TidPtr 用于记录当前处理的 ctid 在 tss_TidList 数组中的偏移量,初始值
+		 * 设为 -1
+		 */
 		if (node->tss_TidPtr < 0)
 		{
 			/* initialize for backward scan */
@@ -364,16 +376,21 @@ TidNext(TidScanState *node)
 
 	while (node->tss_TidPtr >= 0 && node->tss_TidPtr < numTids)
 	{
+		/* 从 tss_TidList 中获取下一个 ctid 值 */
 		tuple->t_self = tidList[node->tss_TidPtr];
 
 		/*
 		 * For WHERE CURRENT OF, the tuple retrieved from the cursor might
 		 * since have been updated; if so, we should fetch the version that is
 		 * current according to our snapshot.
+		 * 
+		 * 出于并发的需要, 当 TidScan 节点用于 “CURRENT OF…(游标名)” 语句时,获取的 ctid
+		 * 可能已经被其他事务修改, 需要获取此 ctid 对应元组的最新版本(利用 HOT 链)
 		 */
 		if (node->tss_isCurrentOf)
 			heap_get_latest_tid(heapRelation, snapshot, &tuple->t_self);
 
+		/* 调用存储模块提供的 heap_fetch 根据该 ctid 获取元组并返回 */
 		if (heap_fetch(heapRelation, snapshot, tuple, &buffer, false, NULL))
 		{
 			/*
@@ -553,6 +570,8 @@ ExecInitTidScan(TidScan *node, EState *estate, int eflags)
 
 	/*
 	 * open the base relation and acquire appropriate lock on it.
+	 *
+	 * 根据节点中的 scanrelid 初始化扫描描述符 ss_currentScanDesc
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 

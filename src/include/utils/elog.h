@@ -290,6 +290,8 @@ extern PGDLLIMPORT ErrorContextCallback *error_context_stack;
  * away when such a variable was not marked.  Beware that gcc's -Wclobbered
  * warnings are just about entirely useless for catching such oversights.
  *----------
+ *
+ * 实现可参考: https://zhuanlan.zhihu.com/p/86547911
  */
 #define PG_TRY()  \
 	do { \

@@ -25,6 +25,10 @@ static TupleTableSlot *WorkTableScanNext(WorkTableScanState *node);
  *
  *		This is a workhorse for ExecWorkTableScan
  * ----------------------------------------------------------------
+ * 
+ * WorkTableScan 会与 RecursiveUnion 共同完成递归合并子查询. RecursiveUnion 会
+ * 绶存一次递归中的所有元组到 RecursiveUnionState 结构中，WorkTableScan 提供了对
+ * 此缓存的扫描
  */
 static TupleTableSlot *
 WorkTableScanNext(WorkTableScanState *node)

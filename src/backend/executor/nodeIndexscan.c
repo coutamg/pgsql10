@@ -76,6 +76,8 @@ static HeapTuple reorderqueue_pop(IndexScanState *node);
  *		Retrieve a tuple from the IndexScan node's currentRelation
  *		using the index specified in the IndexScanState information.
  * ----------------------------------------------------------------
+ * 
+ * IndexScan 与 IndexScanState 关系见 nodeIndexscan.png
  */
 static TupleTableSlot *
 IndexNext(IndexScanState *node)
@@ -925,9 +927,12 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 
 	/*
 	 * open the base relation and acquire appropriate lock on it.
+	 *
+	 * 通过计划节点中 scanrelid 字段的信息获取被扫描对象的 RelationData 结构
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 
+	/* RelationData 链接在 ss_currentRelation 字段中 */
 	indexstate->ss.ss_currentRelation = currentRelation;
 	indexstate->ss.ss_currentScanDesc = NULL;	/* no heap scan here */
 
@@ -956,6 +961,8 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	 * If the parent table is one of the target relations of the query, then
 	 * InitPlan already opened and write-locked the index, so we can avoid
 	 * taking another lock here.  Otherwise we need a normal reader's lock.
+	 * 
+	 * 使用 indexid 获取索引的 RelationData 结构存放于 iss_RelationDesc 字段中
 	 */
 	relistarget = ExecRelationIsTargetRelation(estate, node->scan.scanrelid);
 	indexstate->iss_RelationDesc = index_open(node->indexid,
@@ -970,6 +977,12 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 
 	/*
 	 * build the index scan keys from the index qualification
+	 *
+	 * 通过调用 ExecIndexBuildScanKeys 将 indexqual 中的索引扫描条件转换为扫描关键字
+	 * (ScanKey,存储扫描满足的条件)以及运行时关键字计算结构(IndexRuntimeKeyInfo,执行时
+	 * 才能得到结果的表达式信息)分别存储在 iss_ScanKeys 和 iss_RuntimeKeys 这两个数组中.
+	 * 
+	 * iss_NumScanKeys 和 iss_NumRuntimeKeys 则用于指示前面两个数组的长度
 	 */
 	ExecIndexBuildScanKeys((PlanState *) indexstate,
 						   indexstate->iss_RelationDesc,
