@@ -99,9 +99,12 @@ typedef struct
 
 /*
  * Private state of a Tuplestore operation.
+ *
+ * 元组的缓存结构，以加快执行效率或实现特定功能(例如排序等)来存储相关信息和数据
  */
 struct Tuplestorestate
 {
+	/* Tuplestore操作期间的状态(保持在内存等待处理；读；写) */
 	TupStoreStatus status;		/* enumerated value as shown above */
 	int			eflags;			/* capability flags (OR of pointers' flags) */
 	bool		backward;		/* store extra length words in file? */
@@ -156,6 +159,10 @@ struct Tuplestorestate
 	 * the effort to slide the remaining pointers down.  These unused pointers
 	 * are set to NULL to catch any invalid accesses.  Note that memtupcount
 	 * includes the deleted pointers.
+	 */
+	/*
+	 * 指定了一块内存区域用于缓存数据，而当内存中缓存的元组达到一定的数量时会将元组写入
+	 * myfile 字段指定的临时文件
 	 */
 	void	  **memtuples;		/* array of pointers to palloc'd tuples */
 	int			memtupdeleted;	/* the first N slots are currently unused */
@@ -313,6 +320,8 @@ tuplestore_begin_common(int eflags, bool interXact, int maxKBytes)
  *
  * maxKBytes: how much data to store in memory (any data beyond this
  * amount is paged to disk).  When in doubt, use work_mem.
+ * 
+ * 构造和初始化
  */
 Tuplestorestate *
 tuplestore_begin_heap(bool randomAccess, bool interXact, int maxKBytes)
@@ -725,6 +734,8 @@ tuplestore_puttupleslot(Tuplestorestate *state,
 /*
  * "Standard" case to copy from a HeapTuple.  This is actually now somewhat
  * deprecated, but not worth getting rid of in view of the number of callers.
+ * 
+ * 用于将 tuple 加入到 tuplestore
  */
 void
 tuplestore_puttuple(Tuplestorestate *state, HeapTuple tuple)
@@ -898,6 +909,8 @@ tuplestore_puttuple_common(Tuplestorestate *state, void *tuple)
  *
  * Backward scan is only allowed if randomAccess was set true or
  * EXEC_FLAG_BACKWARD was specified to tuplestore_set_eflags().
+ * 
+ * 可以从 tuplestore 中获取元组
  */
 static void *
 tuplestore_gettuple(Tuplestorestate *state, bool forward,

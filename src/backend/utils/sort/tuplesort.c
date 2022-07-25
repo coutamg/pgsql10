@@ -270,6 +270,7 @@ typedef int (*SortTupleComparator) (const SortTuple *a, const SortTuple *b,
  */
 struct Tuplesortstate
 {
+	/* Tuplestore操作期间的状态(保持在内存等待处理；读；写) */
 	TupSortStatus status;		/* enumerated value as shown above */
 	int			nKeys;			/* number of columns in sort key */
 	bool		randomAccess;	/* did caller request random access? */
@@ -284,6 +285,7 @@ struct Tuplesortstate
 	int			tapeRange;		/* maxTapes-1 (Knuth's P) */
 	MemoryContext sortcontext;	/* memory context holding most sort data */
 	MemoryContext tuplecontext; /* sub-context of sortcontext for tuple data */
+	/* 提供了在外部排序时的排序文件的功能(类似于 Tuplestorestate 中的 BufFile 字段) */
 	LogicalTapeSet *tapeset;	/* logtape.c object for tapes in a temp file */
 
 	/*
@@ -752,6 +754,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	return state;
 }
 
+/* 构造和初始化 */
 Tuplesortstate *
 tuplesort_begin_heap(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
@@ -1369,9 +1372,11 @@ tuplesort_puttupleslot(Tuplesortstate *state, TupleTableSlot *slot)
 	/*
 	 * Copy the given tuple into memory we control, and decrease availMem.
 	 * Then call the common code.
+	 * 
+	 * 将获得的元组进行拷贝(考虑到内存上下文的问题，必须拷贝而不是引用)
 	 */
 	COPYTUP(state, &stup, (void *) slot);
-
+	/* 调用 puttuple_common 函数进行共通处理 */
 	puttuple_common(state, &stup);
 
 	MemoryContextSwitchTo(oldcontext);
@@ -1562,6 +1567,41 @@ tuplesort_putdatum(Tuplesortstate *state, Datum val, bool isNull)
 
 /*
  * Shared code for tuple and datum cases.
+ *
+ * puttuple_common函数比较微妙，会根据Sort节点所在的状态做不同处理。
+ * 其实说白了就是依据当前已输入元组的数量决定排序的方法：
+ * 
+ * 1. 数据量少到可以整体放到内存的话，就直接快速排序走起；
+ * 2. 数据量较大内存放不下，但是所需要返回的元组内存可以装下或者 TOP N 的性能比快排
+ *    好的话，TOP N 类型的算法走起(这里是堆排序)，
+ * 3. 数据量很大，并且返回的元组内存也放不下的话，外部归并排序走起
+ * 
+ * 
+ * switch (status)
+ * {
+ * 	case TSS_INITIAL:(这个状态下暂时是快速排序)
+ * 		读入 SortTuple；
+ * 		满足 if (state->bounded &&
+ * 				 (state->memtupcount > state->bound * 2 ||
+ * 				  (state->memtupcount > state->bound && LACKMEM(state)))):
+ * 				    则 switch over to a bounded heapsort(大顶堆)
+ * 				    status = TSS_BOUNDED	--> 堆排序
+ * 
+ * 		if (state->memtupcount < state->memtupsize && !LACKMEM(state))
+ * 			return; 返回, -->快速排序
+ * 		否则 Execute_Tape_sort：
+ * 			将数据写到 tape  
+ * 			status = TSS_BUILDRUNS-->外部归并排序
+ * 			
+ * 	case TSS_BOUNDED:(这个状态下已经是堆排序)
+ * 		if new tuple <= top of the heap, so we can discard it
+ * 		else discard top of heap, sift up, insert new tuple
+ * 		
+ * 	case TSS_BUILDRUNS:(这个状态下已经是外部归并排序)
+ * 		Insert the tuple into the heap, with run number currentRun if
+ * 		it can go into the current run, else run number currentRun+1.
+ * }
+ * 
  */
 static void
 puttuple_common(Tuplesortstate *state, SortTuple *tuple)

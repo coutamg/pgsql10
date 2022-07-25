@@ -56,9 +56,9 @@
  * If neither is set, the plan may or may not produce tuples including OIDs.
  */
 #define EXEC_FLAG_EXPLAIN_ONLY	0x0001	/* EXPLAIN, no ANALYZE */
-#define EXEC_FLAG_REWIND		0x0002	/* need efficient rescan */
-#define EXEC_FLAG_BACKWARD		0x0004	/* need backward scan */
-#define EXEC_FLAG_MARK			0x0008	/* need mark/restore */
+#define EXEC_FLAG_REWIND		0x0002	/* need efficient rescan 重新扫描 */
+#define EXEC_FLAG_BACKWARD		0x0004	/* need backward scan 反向扫描 */
+#define EXEC_FLAG_MARK			0x0008	/* need mark/restore 标记扫描位置 */
 #define EXEC_FLAG_SKIP_TRIGGERS 0x0010	/* skip AfterTrigger calls */
 #define EXEC_FLAG_WITH_OIDS		0x0020	/* force OIDs in returned tuples */
 #define EXEC_FLAG_WITHOUT_OIDS	0x0040	/* force no OIDs in returned tuples */

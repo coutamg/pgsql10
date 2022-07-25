@@ -303,12 +303,23 @@ typedef struct MergeAppend
 typedef struct RecursiveUnion
 {
 	Plan		plan;
+	/* 用于与 WorkTableScan(负责对临时表的扫描，即递归部分的査询语句的执行)传递
+	 * 参数.
+	 * 执行中 RecursiveUnion 与 WorkTableScan 之间的参数传递是通过 Estate 中
+	 * es_param_exec_vals 指向的参数数组完成的，wtParam 表示传递的参数在该数组
+	 * 中的偏移量
+	 */
 	int			wtParam;		/* ID of Param representing work table */
 	/* Remaining fields are zero/null in UNION ALL case */
+	/* 四个扩展属性用于 UNION 时不包含关键字ALL的情况 */
+	/* 存储了用于去重判断的属性个数 */
 	int			numCols;		/* number of columns to check for
 								 * duplicate-ness */
+	/* 数组记录用去重判断的属性号 */
 	AttrNumber *dupColIdx;		/* their indexes in the target list */
+	/* 数组记录了用于判断各属性是否相同的函数的 OID */
 	Oid		   *dupOperators;	/* equality operators to compare with */
+	/* 记录了结果元组数的估计值 */
 	long		numGroups;		/* estimated number of groups in input */
 } RecursiveUnion;
 
@@ -786,10 +797,14 @@ typedef struct Material
 typedef struct Sort
 {
 	Plan		plan;
+	/* 排序的属性个数 */
 	int			numCols;		/* number of sort-key columns */
+	/* 排序的属性的属性号数组(长度为 numCols) */
 	AttrNumber *sortColIdx;		/* their indexes in the target list */
+	/* 每个排序属性的排序操作符OID数组(长度也为 numCols) */
 	Oid		   *sortOperators;	/* OIDs of operators to sort them by */
 	Oid		   *collations;		/* OIDs of collations */
+	/* 记录是否将空值排在前面 */
 	bool	   *nullsFirst;		/* NULLS FIRST/LAST directions */
 } Sort;
 

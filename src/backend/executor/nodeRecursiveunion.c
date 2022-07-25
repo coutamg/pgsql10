@@ -15,6 +15,35 @@
  *	  src/backend/executor/nodeRecursiveunion.c
  *
  *-------------------------------------------------------------------------
+ *
+ * RecursiveUnion节点用于处理递归定义的 UNION 语句
+ * 
+ * postgres=# explain WITH RECURSIVE t(n)AS(
+ * VALUES (1)
+ * UNION ALL
+ * SELECT n +1 FROM t WHERE n < 100)
+ * select sum(n) FROM t;
+ *                                QUERY PLAN
+ * -------------------------------------------------------------------------
+ *  Aggregate  (cost=3.65..3.66 rows=1 width=4)
+ *    CTE t
+ *      ->  Recursive Union  (cost=0.00..2.95 rows=31 width=4)
+ *            ->  Result  (cost=0.00..0.01 rows=1 width=0)
+ *            ->  WorkTable Scan on t t_1  (cost=0.00..0.23 rows=3 width=4)
+ *                  Filter: (n < 100)
+ *    ->  CTE Scan on t  (cost=0.00..0.62 rows=31 width=4)
+ * (7 rows)
+ * 
+ * 该査询定义了一个临时表并将 VALUES 子句给出的元组作为 t 的初始值，“SELECT n + 1 FROM t 
+ * WHERE n < 100 ”将 t 中属性 n 小于 100 的元组的 n 值加 1 并返回，UNION ALL操作将
+ * SELECT 语句产生的新元组集合合并到临时表 t 中。 以上的 SELECT 和 UNION 操作将递归地执行
+ * 下去,直到 SELECT 语句没有新元组输出为止。最后执行 “SELECT sum (n) FROM t” 对 t 中元
+ * 组的 n 值做求和操作。
+ *
+ * 上述査询由 RecursiveUnion 节点处理。有一个初始输入集作为递归过程的初始数据(如上例中
+ * “VALUES(1)”)，然后进行递归部分(上例中的 “SELECTn + 1 FROM t WHERE n < 100”)的处理
+ * 得到输出，并将新得到的输出与初始输入合并后作为下次递归的输入(例如第一次递归处理时新的输出集
+ * 为{2},与初始输入合并后为{1, 2})
  */
 #include "postgres.h"
 
@@ -108,19 +137,21 @@ ExecRecursiveUnion(PlanState *pstate)
 			/* 将获取的元组直接返回 */
 			return slot;
 		}
+		/* 递归初始化执行完毕 */
 		node->recursing = true;
 	}
 
 	/* 2. Execute recursive term */
 	for (;;)
 	{
-		/* 当处理完毕所有的左子节点计划后,会执行右子节点计划以获取结果元组
+		/* 当处理完毕所有的左子节点计划后, 会执行右子节点计划以获取结果元组
 		 * 其中, 右子节点计划中的 WorkTableScan 会以 working_table 为扫描对象
 		 */
 		slot = ExecProcNode(innerPlan);
 		if (TupIsNull(slot))
 		{
 			/* Done if there's nothing in the intermediate table */
+			/* working_table 没有满足要求的数据了, 一般需要两次走到这里才会结束 */
 			if (node->intermediate_empty)
 				break;
 
@@ -162,10 +193,12 @@ ExecRecursiveUnion(PlanState *pstate)
 		}
 
 		/* Else, tuple is good; stash it in intermediate table ... */
+		/* working_table 有数据的时候, 则不能停止递归 */
 		node->intermediate_empty = false;
 		/* 右子节点扫描的结果缓存在另一个元组存储结构 intermediate_table */
 		tuplestore_puttupleslot(node->intermediate_table, slot);
 		/* ... and return it */
+		/* 右子节点计划返回的结果元组将作为 RecursiveUnion 节点的输出 */
 		return slot;
 	}
 
@@ -202,6 +235,9 @@ ExecInitRecursiveUnion(RecursiveUnion *node, EState *estate, int eflags)
 	/* initialize processing state */
 	rustate->recursing = false;
 	rustate->intermediate_empty = true;
+	/* RecureiveUnionState 节点的 working_table 和 intermediate_table 字段初始化
+	 * 元组缓存结构
+	 */
 	rustate->working_table = tuplestore_begin_heap(false, false, work_mem);
 	rustate->intermediate_table = tuplestore_begin_heap(false, false, work_mem);
 
@@ -210,6 +246,9 @@ ExecInitRecursiveUnion(RecursiveUnion *node, EState *estate, int eflags)
 	 * longer-lived context to store the hash table.  The table can't just be
 	 * kept in the per-query context because we want to be able to throw it
 	 * away when rescanning.
+	 * 
+	 * 根据 numCols 是否为 0 来辨别是否需要在合并时进行去重
+	 * 申请两个内存上下文用于去重操作
 	 */
 	if (node->numCols > 0)
 	{
@@ -263,6 +302,10 @@ ExecInitRecursiveUnion(RecursiveUnion *node, EState *estate, int eflags)
 	/*
 	 * If hashing, precompute fmgr lookup data for inner loop, and create the
 	 * hash table.
+	 * 
+	 * 根据 numCols 是否为0来辨别是否需要在合并时进行去重
+	 * 根据 dupOpemtors 字段初始化 RccursiveUnionState 节点的 eqfunctions 和
+	 * hashfunctions 字段
 	 */
 	if (node->numCols > 0)
 	{
@@ -270,6 +313,7 @@ ExecInitRecursiveUnion(RecursiveUnion *node, EState *estate, int eflags)
 							  node->dupOperators,
 							  &rustate->eqfunctions,
 							  &rustate->hashfunctions);
+		/* 创建去重操作用的 Hash 表 */
 		build_hash_table(rustate);
 	}
 

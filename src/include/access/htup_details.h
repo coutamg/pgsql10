@@ -214,17 +214,42 @@ struct HeapTupleHeaderData
 
 /*
  * information stored in t_infomask:
+ *
+ * 行锁参考：
+ * https://weread.qq.com/web/reader/6c0329907263ff646c07cd0kb6d32b90216b6d767d2f0dc
+ * 
+ * 行锁和标记位的反向对应关系
+ * 
+ * for update 		 :  HEAP_XMAX_EXCL_LOCK | HEAP_XMAX_LOCK_ONLY (t_infomask)
+ * 					    HEAP_KEYS_UPDATED (t_infomask2)
+ * 
+ * for no key update :  HEAP_XMAX_EXCL_LOCK | HEAP_XMAX_LOCK_ONLY (t_infomask)
+ * 
+ * for share		 :  HEAP_XMAX_SHR_LOCK | HEAP_XMAX_LOCK_ONLY (t_infomask)
+ * 
+ * update			 :  HEAP_XMAX_EXCL_LOCK (t_infomask)
+ * 						HEAP_KEYS_UPDATED (t_infomask2)
+ * 
+ * delete			 :  HEAP_XMAX_EXCL_LOCK (t_infomask)
+ * 						HEAP_KEYS_UPDATED (t_infomask2)
  */
 #define HEAP_HASNULL			0x0001	/* has null attribute(s) */
 #define HEAP_HASVARWIDTH		0x0002	/* has variable-width attribute(s) */
 #define HEAP_HASEXTERNAL		0x0004	/* has external stored attribute(s) */
 #define HEAP_HASOID				0x0008	/* has an object-id field */
+/* for key share 子句对应的锁 */
 #define HEAP_XMAX_KEYSHR_LOCK	0x0010	/* xmax is a key-shared locker */
 #define HEAP_COMBOCID			0x0020	/* t_cid is a combo cid */
+/* for update 和 for no key update 共同的标记位
+ * 如果同时含有 HEAP_KEYS_UPDATED 则属于 for update, update 主键索引
+ * 值或者 delete, 否则属于 for no key update
+ */
 #define HEAP_XMAX_EXCL_LOCK		0x0040	/* xmax is exclusive locker */
+/* 通过 select ... for ... 加锁 */
 #define HEAP_XMAX_LOCK_ONLY		0x0080	/* xmax, if valid, is only a locker */
 
  /* xmax is a shared locker */
+ /* for share 字句 */
 #define HEAP_XMAX_SHR_LOCK	(HEAP_XMAX_EXCL_LOCK | HEAP_XMAX_KEYSHR_LOCK)
 
 #define HEAP_LOCK_MASK	(HEAP_XMAX_SHR_LOCK | HEAP_XMAX_EXCL_LOCK | \
@@ -234,6 +259,7 @@ struct HeapTupleHeaderData
 #define HEAP_XMIN_FROZEN		(HEAP_XMIN_COMMITTED|HEAP_XMIN_INVALID) /* 元组 frozen */
 #define HEAP_XMAX_COMMITTED		0x0400	/* t_xmax committed */
 #define HEAP_XMAX_INVALID		0x0800	/* t_xmax invalid/aborted */
+/* xmax 中不是事务 ID, 而是 MultiXactId */
 #define HEAP_XMAX_IS_MULTI		0x1000	/* t_xmax is a MultiXactId */
 #define HEAP_UPDATED			0x2000	/* this is UPDATEd version of row */
 #define HEAP_MOVED_OFF			0x4000	/* moved to another place by pre-9.0
@@ -304,6 +330,7 @@ struct HeapTupleHeaderData
  */
 #define HEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
 /* bits 0x1800 are available */
+/* 标记行锁是 for update, update 主键索引或者 delete 产生 */
 #define HEAP_KEYS_UPDATED		0x2000	/* tuple was updated and key cols
 										 * modified, or tuple deleted */
 #define HEAP_HOT_UPDATED		0x4000	/* tuple was HOT-updated */

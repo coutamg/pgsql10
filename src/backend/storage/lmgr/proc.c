@@ -1053,24 +1053,31 @@ ProcQueueInit(PROC_QUEUE *queue)
  *
  * Caller must have set MyProc->heldLocks to reflect locks already held
  * on the lockable object by this process (under all XIDs).
+ * 调用者必须设置 MyProc->heldLocks 表示本进程已获得的锁
  *
  * The lock table's partition lock must be held at entry, and will be held
  * at exit.
- *
+ * 锁表的分区锁必须在进入函数时必须持有，在退出函数时也会持有
+ * 
  * Result: STATUS_OK if we acquired the lock, STATUS_ERROR if not (deadlock).
+ * 成功获得锁则返回 PROC_WAIT_STATUS_OK, 失败则返回 PROC_WAIT_STATUS_ERROR(出现死锁)
+
  *
  * ASSUME: that no one will fiddle with the queue until after
  *		we release the partition lock.
+ * 假设没有人会篡改该等待队列，直到我们释放分区锁
  *
  * NOTES: The process queue is now a priority queue for locking.
+ * 该进程队列目前是对锁优先队列
  */
 /*
   将当前事务（或进程）加入等待队列也是有技巧的。通常而言，等待队列应该按照锁的申请顺序排列，
   因此当前事务应该加入等待队列的队尾。但是如果本事务A除了当前申请的锁模式，已经持有了这个
-  对象的其他锁模式，而且等待队列中某个事务B所等待的锁模式和当前事务A持有的锁模式冲突，这时ßßßß
+  对象的其他锁模式，而且等待队列中某个事务B所等待的锁模式和当前事务A持有的锁模式冲突，这时
   候如果把事务A插入这个等待者B的后面，就隐含着死锁的可能，所以可以考虑把事务A插入这个等待
   者的前面
 */
+/* 参考 https://blog.csdn.net/Hehuyi_In/article/details/124904713 */
 int
 ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 {
@@ -1093,10 +1100,11 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	 * need to be included in myHeldLocks.
 	 */
 	// 收集当前事务在 locallock 这个锁对象上持有的其他锁模式
-	// 如果不是单进程事务，则需要将相同group中持有该锁对象的锁
+	// 如果不是单进程事务，则需要将相同 group 中持有该锁对象的锁
 	// 模式一并收集
 	if (leader != NULL)
 	{
+		/* 并行事务 */
 		SHM_QUEUE  *procLocks = &(lock->procLocks);
 		PROCLOCK   *otherproclock;
 
@@ -1114,6 +1122,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 
 	/*
 	 * Determine where to add myself in the wait queue.
+	 * 决定将本事务加入到等待队列的哪个位置
 	 *
 	 * Normally I should go at the end of the queue.  However, if I already
 	 * hold locks that conflict with the request of any previous waiter, put
@@ -1128,18 +1137,30 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	 * This is the same as the test for immediate grant in LockAcquire, except
 	 * we are only considering the part of the wait queue before my insertion
 	 * point.
+	 * 
+	 * 将当前事务（或进程）加入等待队列也是有技巧的。通常，等待队列应该按照锁申请的顺序排列，将
+	 * 当前事务加入等待队列的队尾。但如果本事务 A 除了当前申请的锁模式，已经持有了该对象的其他锁
+	 * 模式，而等待队列中的事务 B 等待的锁模式与事务 A 持有的锁模式冲突，此时再将事务 A 插入等
+	 * 待者 B 的后面，就隐含死锁的风险，可以考虑将事务 A 插队到事务 B 的前面。
 	 */
 	if (myHeldLocks != 0)
 	{
+		/* 当前事务在这个锁对象上还持有其他锁模式 */
+
 		LOCKMASK	aheadRequests = 0;
 		// 从等待队列获得一个事务（进程），它是一个等待者
 		proc = (PGPROC *) waitQueue->links.next;
+		/* 循环检查等待队列 */
 		for (i = 0; i < waitQueue->size; i++)
 		{
 			/*
 			 * If we're part of the same locking group as this waiter, its
 			 * locks neither conflict with ours nor contribute to
 			 * aheadRequests.
+			 * 
+			 * 如果当前事务（进程）跟等待队列的事务是同一个 group 的并行进程，那么它们之间
+			 * 不会有锁冲突，也不会对 aheadRequests 有什么用。取等待队列中的下一个事务，
+			 * 进入下一次循环即可。
 			 */
 			if (leader != NULL && leader == proc->lockGroupLeader)
 			{
@@ -1147,12 +1168,13 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 				continue;
 			}
 			/* Must he wait for me? */
-			// 等待队列中的等待者想要的锁模式和当前事务持有的锁模式有冲突
+			/* 如果非并行进程，判断等待者想要的锁模式与当前事务持有的是否冲突。即，它一定要等我吗 */
 			if (lockMethodTable->conflictTab[proc->waitLockMode] & myHeldLocks)
 			{
 				/* Must I wait for him ? */
 				// 情况一：如果当前事务要等待的锁模式和等待者持有的锁模式冲突，这时候冲突
 				//		  不可避免，需要记录死锁标记
+				/* 反过来，我等的是不是这个等待队列的事务持有的锁模式，我一定要等它吗 */
 				if (lockMethodTable->conflictTab[lockmode] & proc->heldLocks)
 				{
 					/*
@@ -1161,6 +1183,10 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 					 * can't do that until we are *on* the wait queue. So, set
 					 * a flag to check below, and break out of loop.  Also,
 					 * record deadlock info for later message.
+					 * 
+					 * 如果两者都是，那就死锁了。最简单的方式是调用 RemoveFromWaitQueue 清理,
+					 * 但必须等到我们在等待队列时才能执行，因此，我们只是打一个死锁的标记，然后退
+					 * 出循环。另外，还要记录死锁信息
 					 */
 					RememberSimpleDeadLock(MyProc, lockmode, lock, proc);
 					early_deadlock = true;
@@ -1178,6 +1204,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 									   proclock) == STATUS_OK)
 				{
 					/* Skip the wait and just grant myself the lock. */
+					/* 跳过等待直接获取锁 */
 					GrantLock(lock, proclock, lockmode);
 					GrantAwaitedLock();
 					return STATUS_OK;
@@ -1188,14 +1215,19 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 				break;
 			}
 			/* Nope, so advance to next waiter */
-			// 收集等待队列中的等待的锁模式的并集
-			aheadRequests |= LOCKBIT_ON(proc->waitLockMode);
-			proc = (PGPROC *) proc->links.next;
+			/* 如果它不需要等待我，那么再换下一个等待队列的事务 */
+			aheadRequests |= LOCKBIT_ON(proc->waitLockMode);/* 收集等待队列中的等待
+															 * 的锁模式的并集
+															 */
+			proc = (PGPROC *) proc->links.next; /* 再换下一个等待队列的事务 */
 		}
 
 		/*
 		 * If we fall out of loop normally, proc points to waitQueue head, so
 		 * we will insert at tail of queue as desired.
+		 * 
+		 * 如果这么多个 if 都没匹配到，循环顺利完成了，此时 proc 会指向等待队列 waitQueue 的
+		 * 尽头，因此我们可以按照之前预期的，将当前事务插到等待队列的最末尾
 		 */
 	}
 	else
@@ -1210,14 +1242,16 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	 * Insert self into queue, ahead of the given proc (or at tail of queue).
 	 */
 	/*
-		插入等待队列后，锁就开始进入等待状态，它会在以下两种情况下被唤醒。
-		 • 死锁检测触发超时机制，要进行新一轮的死锁检测。
-		 • PGPROC->waitStatus不再是STATUS_WAITING状态，已经有其他
-		   事务释放了锁，当前事务被唤醒
-	*/
-	SHMQueueInsertBefore(&(proc->links), &(MyProc->links));
-	waitQueue->size++;
+	 * 插入等待队列后，锁就开始进入等待状态，它会在以下两种情况下被唤醒。
+	 *  • 死锁检测触发超时机制，要进行新一轮的死锁检测。
+	 *  • PGPROC->waitStatus 不再是 STATUS_WAITING 状态，已经有其他
+	 *    事务释放了锁，当前事务被唤醒
+	 */
 
+	/* 将其插入到proc前面，或者队列最末端 */
+	SHMQueueInsertBefore(&(proc->links), &(MyProc->links));
+	waitQueue->size++; /* 等待队列长度加1 */
+	/* 插入等待队列后，事务就开始进入等待状态 */
 	lock->waitMask |= LOCKBIT_ON(lockmode);
 
 	/* Set up wait information in PGPROC object, too */
@@ -1231,6 +1265,8 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	 * If we detected deadlock, give up without waiting.  This must agree with
 	 * CheckDeadLock's recovery code, except that we shouldn't release the
 	 * semaphore since we haven't tried to lock it yet.
+	 * 
+	 * 如果前面设置了 early_deadlock 标志，不需要再等待，直接返回报错
 	 */
 	if (early_deadlock)
 	{
@@ -1320,6 +1356,11 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 		}
 		else
 		{
+			/* 此处会去调用 pgstat_report_wait_start 设置 proc->wait_event_info 
+			 * 为 PG_WAIT_LOCK, 在 
+			 *		select wait_event_type from pg_stat_activity xxx 
+			 * 时可以查出 wait_event_type 为 Lock(具体参考 pg_stat_get_activity)
+			 */
 			WaitLatch(MyLatch, WL_LATCH_SET, 0,
 					  PG_WAIT_LOCK | locallock->tag.lock.locktag_type);
 			ResetLatch(MyLatch);

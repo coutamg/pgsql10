@@ -137,6 +137,8 @@ typedef struct
  * Relation table_open(Oid relationId, LOCKMODE lockmode)
  * Relation relation_open(Oid relationId, LOCKMODE lockmode)
  * void LockRelationOid(Oid relid, LOCKMODE lockmode)
+ * 
+ * 该结构体定义了与"lock method"关联的锁的语义
  */
 typedef struct LockMethodData
 {
@@ -147,6 +149,8 @@ typedef struct LockMethodData
 	 * conflictTab[0]未使用
 	 * 
 	 * 由于 LOCKMASK 是个位图，所以 conflictTab 可以认为是个二维数组
+	 * 
+	 * 是常规锁模式的相容矩阵
 	 */
 	const LOCKMASK *conflictTab;
 	const char *const *lockModeNames;
@@ -377,9 +381,9 @@ typedef struct LOCK
 	LOCKTAG		tag;			/* unique identifier of lockable object */
 
 	/* data */
-	// 对象被持有的锁模式
+	/* 该对象已经持有的锁模式 */
 	LOCKMASK	grantMask;		/* bitmask for lock types already granted */
-	// 等待队列中的请求想要持有这个锁的模式
+	/* 等待队列中请求该 锁对象 的 锁模式 */
 	LOCKMASK	waitMask;		/* bitmask for lock types awaited */
 	// 这个锁上所有 PROCLOCK
 	SHM_QUEUE	procLocks;		/* list of PROCLOCK objects assoc. with lock */
@@ -389,8 +393,9 @@ typedef struct LOCK
 	int			requested[MAX_LOCKMODES];	/* counts of requested locks */
 	// requested 数组的和
 	int			nRequested;		/* total of requested[] array */
-	// 记录已持有的会话数
+	/* 持有该锁的会话数 */
 	int			granted[MAX_LOCKMODES]; /* counts of granted locks */
+	/* granted数组的元素数 */
 	int			nGranted;		/* total of granted[] array */
 } LOCK;
 
@@ -442,7 +447,9 @@ typedef struct LOCK
 typedef struct PROCLOCKTAG
 {
 	/* NB: we assume this struct contains no padding! */
+	/* 指向每个锁会话信息 */
 	LOCK	   *myLock;			/* link to per-lockable-object information */
+	/* 指向进程 PGPROC */
 	PGPROC	   *myProc;			/* link to PGPROC of owning backend */
 } PROCLOCKTAG;
 
@@ -452,7 +459,7 @@ typedef struct PROCLOCKTAG
  */
 typedef struct PROCLOCK
 {
-	/* tag PROCLOCK的唯一 ID*/
+	/* tag PROCLOCK 的唯一 ID*/
 	PROCLOCKTAG tag;			/* unique identifier of proclock object */
 
 	/* data */

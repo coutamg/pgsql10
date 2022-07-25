@@ -644,7 +644,7 @@ AssignTransactionId(TransactionState s)
 	 * have XIDs yet.
 	 * 
 	 * 如果时子事务，则需要给父事务也分配事务 ID, 这里不用递归的方法向上检查，避免栈溢出，
-	 * 而是根据 nsetingLevel 计算上层有多少层，按照层数分配指针数组，然后通过循环为数组
+	 * 而是根据 nestingLevel 计算上层有多少层，按照层数分配指针数组，然后通过循环为数组
 	 * 中的每一个子事务分配事务 ID, 注意分配事务 ID 的顺序，先为父事务分配，后为当前层
 	 * 事务分配
 	 * 
@@ -747,6 +747,10 @@ AssignTransactionId(TransactionState s)
 	PG_TRY();
 	{
 		CurrentResourceOwner = s->curTransactionOwner;
+		/*
+		 * 锁本事务 id, 其他事务并发修改该 tuple 时, 可以通过加锁来判断事务是否执行完了
+		 * 参考 XactLockTableWait
+		 */
 		XactLockTableInsert(s->transactionId);
 	}
 	PG_CATCH();

@@ -34,6 +34,26 @@
  *		Initial States:
  *		  -- the outer child is prepared to return the first tuple.
  * ----------------------------------------------------------------
+ * 
+ * Sort 节点(排序节点)用于对于下层节点的输出结果进行排序，该节点只有左子节点。排序节点先
+ * 将下层节点返回的所有元组缓存起来，然后进行排序。由于缓存结果可能很多，因此不可避免地会
+ * 用到临时文件进行存储，这种情况下 Sort 节点将使用外排序方法
+ * 
+ * 参考 https://www.cnblogs.com/flying-tiger/p/8120046.html
+ * 
+ * postgres=# explain select  id,xxx  from test order by id ;
+ * 
+ *                               QUERY PLAN
+ * ----------------------------------------------------------------------
+ *  Sort  (cost=2904727.34..2929714.96 rows=9995048 width=34)
+ *    Sort Key: id
+ *    ->  Seq Scan on test  (cost=0.00..376141.48 rows=9995048 width=34)
+ * (3 行)
+ * 
+ * postgresql 内部给了很多针对性的调试宏和参数，这里记录一下。
+ *
+ * 在 postgresql.conf 文件中有一个 trace_sort 参数可以在日志中打印 Sort 中的节点的
+ * 初始化执行和结束信息
  */
 static TupleTableSlot *
 ExecSort(PlanState *pstate)
@@ -84,7 +104,9 @@ ExecSort(PlanState *pstate)
 
 		outerNode = outerPlanState(node);
 		tupDesc = ExecGetResultType(outerNode);
-
+		/* 首次调用中会首先通过 tuplesort_begin_heap 对元组缓存结构初始化，返回一个
+		 * Tuplesortstate 结构
+		 */
 		tuplesortstate = tuplesort_begin_heap(tupDesc,
 											  plannode->numCols,
 											  plannode->sortColIdx,
@@ -93,6 +115,7 @@ ExecSort(PlanState *pstate)
 											  plannode->nullsFirst,
 											  work_mem,
 											  node->randomAccess);
+		/* 针对是否存在 limit 字段设置返回元组的 bound 数以及其它的一些 flags */
 		if (node->bounded)
 			tuplesort_set_bound(tuplesortstate, node->bound);
 		node->tuplesortstate = (void *) tuplesortstate;
@@ -103,16 +126,18 @@ ExecSort(PlanState *pstate)
 
 		for (;;)
 		{
+			/* 执行下层节点获取元组 */
 			slot = ExecProcNode(outerNode);
 
 			if (TupIsNull(slot))
 				break;
-
+			/* 下层元组加入 tuplesortstate */
 			tuplesort_puttupleslot(tuplesortstate, slot);
 		}
 
 		/*
 		 * Complete the sort.
+		 * 获取到下层节点的所有元组之后，调用 tuplesort_performsort 对缓存元组进行排序
 		 */
 		tuplesort_performsort(tuplesortstate);
 
@@ -137,11 +162,16 @@ ExecSort(PlanState *pstate)
 	 * Get the first or next tuple from tuplesort. Returns NULL if no more
 	 * tuples.  Note that we only rely on slot tuple remaining valid until the
 	 * next fetch from the tuplesort.
+	 * 
+	 * 第一次调用结束后, 后续对 Sort 节点的执行都将直接调用 tuplesort_gettupleslot 从缓
+	 * 存中返回一个元组。比如说你要返回 100 个元组，这里就要重复执行1+99(这个1是最开始的第
+	 * 一次)次得到结果
 	 */
 	slot = node->ss.ps.ps_ResultTupleSlot;
 	(void) tuplesort_gettupleslot(tuplesortstate,
 								  ScanDirectionIsForward(dir),
 								  false, slot, NULL);
+	/* 输出元组 */
 	return slot;
 }
 
@@ -151,6 +181,10 @@ ExecSort(PlanState *pstate)
  *		Creates the run-time state information for the sort node
  *		produced by the planner and initializes its outer subtree.
  * ----------------------------------------------------------------
+ * 
+ * 由于 Sort 节点仅对元组进行排序，不需要做投影和选择操作，因此在 Sort 节点的初始
+ * 化过程(ExecInitSort 函数)中不会对 Plan 结构中的投影(targetlist)和选择(qual)链表
+ * 进行初始化
  */
 SortState *
 ExecInitSort(Sort *node, EState *estate, int eflags)

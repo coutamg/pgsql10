@@ -136,11 +136,17 @@ static HeapTuple ExtractReplicaIdentity(Relation rel, HeapTuple tup, bool key_mo
  * Don't look at lockstatus/updstatus directly!  Use get_mxact_status_for_lock
  * instead.
  */
+
+/* pg 行锁是由 常规锁 + xmax 结合实现的，因此它需要建立常规锁与 LockTupleMode 之间的映
+ * 射关系
+ *
+ * xmax 中是 MultiXactId，则每种子句都对应一种锁模式
+ */
 static const struct
 {
-	LOCKMODE	hwlock;
-	int			lockstatus;
-	int			updstatus;
+	LOCKMODE	hwlock;	/* 对应的常规锁模式 */
+	int			lockstatus; /* 显式指定的锁模式 */
+	int			updstatus; /* 隐式指定的锁模式 */
 }
 
 			tupleLockExtraInfo[MaxLockTupleMode + 1] =
@@ -186,12 +192,21 @@ static const struct
 /*
  * This table maps tuple lock strength values for each particular
  * MultiXactStatus value.
+ * 
+ * 行锁参考: https://blog.csdn.net/Hehuyi_In/article/details/124873942
+ * https://weread.qq.com/web/reader/6c0329907263ff646c07cd0kb6d32b90216b6d767d2f0dc
+ * 
+ * 锁的相容矩阵参考 tuple_lock.png
  */
 static const int MultiXactStatusLock[MaxMultiXactStatus + 1] =
 {
+	/* SELECT FOR KEY SHARE */
 	LockTupleKeyShare,			/* ForKeyShare */
+	/* SELECT FOR SHARE */
 	LockTupleShare,				/* ForShare */
+	/* SELECT FOR NO KEY UPDATE, and UPDATEs that don't modify key columns */
 	LockTupleNoKeyExclusive,	/* ForNoKeyUpdate */
+	/* SELECT FOR UPDATE, UPDATEs that modify key columns, and DELETE */
 	LockTupleExclusive,			/* ForUpdate */
 	LockTupleNoKeyExclusive,	/* NoKeyUpdate */
 	LockTupleExclusive			/* Update */

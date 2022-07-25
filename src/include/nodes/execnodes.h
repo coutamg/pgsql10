@@ -938,8 +938,11 @@ typedef struct EPQState
 typedef struct ResultState
 {
 	PlanState	ps;				/* its first field is NodeTag */
+	/* 放置常量表达式 */
 	ExprState  *resconstantqual;
+	/* Result节点是否已经处理完所有元组 */
 	bool		rs_done;		/* are we done? */
+	/* 标记是否需要计算常量表达式 */
 	bool		rs_checkqual;	/* do we need to check the qual? */
 } ResultState;
 
@@ -1743,12 +1746,21 @@ typedef struct HashJoinState
  *
  *		ss.ss_ScanTupleSlot refers to output of underlying plan.
  * ----------------
+ * 
+ * Material 节点用于缓存子节点结果，对于需要重复多次扫描的子节点（特别是扫描结果每次
+ * 都相同时）可以减少执行的代价。其实现方式在于将结果元组存储于状态节点 MaterialState
+ * 中的特殊的数据结构 Tuplestorestate 中
  */
 typedef struct MaterialState
 {
 	ScanState	ss;				/* its first field is NodeTag */
+	/* eflags是一个状态变量，它表示当前节点是否需要支持反向扫描、标记扫描位置和重新
+	 * 扫描三种操作
+	 */
 	int			eflags;			/* capability flags to pass to tuplestore */
+	/* 下层节点已经扫描完毕，从而避免重复调用下层节点的执行过程 */
 	bool		eof_underlying; /* reached end of underlying plan? */
+	/* 用于缓存元组 */
 	Tuplestorestate *tuplestorestate;
 } MaterialState;
 
@@ -1765,6 +1777,10 @@ typedef struct SortState
 	bool		sort_Done;		/* sort completed yet? */
 	bool		bounded_Done;	/* value of bounded we did the sort with */
 	int64		bound_Done;		/* value of bound we did the sort with */
+	/* 由数据结构 Tuplesortstate 实现，它在 tuplestore 内增加了排序功能：当获取所
+	 * 有的元组后，可对元组进行排序。如果没有使用临时文件，则使用快速排序，否则将使用归并
+	 * 法进行外排序
+	 */
 	void	   *tuplesortstate; /* private state of tuplesort.c */
 } SortState;
 

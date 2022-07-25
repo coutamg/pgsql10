@@ -419,6 +419,7 @@ InitLocks(void)
 	/*
 	 * Compute init/max size to request for lock hashtables.  Note these
 	 * calculations must agree with LockShmemSize!
+	 * 
 	 * 计算锁 hash 表的初始和最大大小，最大为 max_table_size, 初始大小为最大大小的一半
 	 */
 	max_table_size = NLOCKENTS();
@@ -435,7 +436,7 @@ InitLocks(void)
 	info.entrysize = sizeof(LOCK);
 	info.num_partitions = NUM_LOCK_PARTITIONS;
 
-	// 主锁表 被用来保存锁对象，主锁表（LockMethodLockHash）
+	// 主锁表 用于保存当前数据库中所有事务的锁对象, 即 LOCK 结构体, 保存每个锁对象信息
 	LockMethodLockHash = ShmemInitHash("LOCK hash",
 									   init_table_size,
 									   max_table_size,
@@ -455,7 +456,10 @@ InitLocks(void)
 	info.hash = proclock_hash;
 	info.num_partitions = NUM_LOCK_PARTITIONS;
 
-	// 锁表 被用来保存锁对象，进程锁表（LockMethodProcLockHash）
+	/* 进程锁表 保存当前进程（会话）的事务锁状态，即 PROCLOCK 结构体，这
+	 * 个结构体主要用于建立锁和会话的关系
+	 * 保存每个锁对象的每个holder（per-lock-per-holder）信息
+	 */
 	LockMethodProcLockHash = ShmemInitHash("PROCLOCK hash",
 										   init_table_size,
 										   max_table_size,
@@ -468,30 +472,33 @@ InitLocks(void)
 	// 在共享内存中初始化一个FastPathStrongRelationLocks变量，用来记录是否有事务
 	// 已经获得了这个锁对象的“强锁”
 	/*
-		从锁的相容性矩阵可以看出，AccessShareLock、RowShareLock、RowExclusiveLock这
-		3个锁是不互相冲突的，是相容的，而且这几个锁主要用于事务中的DML操作（增删改查），数据
-		库中最常用的操作就是DML操作，因此可以把这几个锁定义为“弱锁”，而其他5个锁则定义为“强
-		锁”（实际上ShareUpdateExclusiveLock由于和自身冲突，不被认为是强锁）。也就是说，
-		弱锁和弱锁之间是相容的，而弱锁和强锁之间是冲突的
-
-		弱锁：AccessShareLock，RowShareLock，RowExclusiveLock
-		强锁：ShareUpdateExclusiveLock，ShareLock，ShareRowExclusiveLock
-		     ExclusiveLock， AccessExclusiveLock
-		
-		如果一个事务对某个对象申请弱锁，同时能够查阅到其他事务在这个对象上没有申请过“强锁”，
-		则可以在事务所在的会话上记录这个弱锁，而不必把这个弱锁保存到共享内存（主锁表）。
-		
-		那么一个事务如何知道其他事务是否在一个对象上申请了强锁呢？如果一个事务在某个对象上申
-		请了强锁，则会在共享内存中做一个标识，这样当一个事务申请弱锁时就会出现以下两种情况。
-		• 如果其他事务已经获得了这个对象的强锁，则本事务不会使用锁的Fast Path，它会按照常
-		  规的方法将锁保存到主锁表。
-		• 如果没有其他事务获得过这个对象的强锁，则本事务将本次的弱锁保存到本会话，也就是进入
-		  Fast Path模式。
-		
-		由于DML操作是常规操作，DDL操作或DCL操作的频率不高，那么数据库大部分时间都只会使用弱
-		锁，这就避免了频繁访问主锁表，只将弱锁保存到当前会话，提高了数据库的性能（虽然判断是
-		否有强锁也需要访问共享内存中FastPathStrongRelationLocks中的标记，但这种访问的粒
-		度比较小）
+	 * 从锁的相容性矩阵可以看出，AccessShareLock、RowShareLock、RowExclusiveLock这
+	 * 3个锁是不互相冲突的，是相容的，而且这几个锁主要用于事务中的DML操作（增删改查），数据
+	 * 库中最常用的操作就是DML操作，因此可以把这几个锁定义为“弱锁”，而其他5个锁则定义为“强
+	 * 锁”（实际上ShareUpdateExclusiveLock由于和自身冲突，不被认为是强锁）。也就是说，
+	 * 弱锁和弱锁之间是相容的，而弱锁和强锁之间是冲突的
+	 * 
+	 * 弱锁：AccessShareLock，RowShareLock，RowExclusiveLock
+	 * 强锁：ShareUpdateExclusiveLock，ShareLock，ShareRowExclusiveLock
+	 *      ExclusiveLock， AccessExclusiveLock
+	 * 
+	 * 如果一个事务对某个对象申请弱锁，同时能够查阅到其他事务在这个对象上没有申请过“强锁”，
+	 * 则可以在事务所在的会话上记录这个弱锁，而不必把这个弱锁保存到共享内存（主锁表）。
+	 * 
+	 * 那么一个事务如何知道其他事务是否在一个对象上申请了强锁呢？如果一个事务在某个对象上申
+	 * 请了强锁，则会在共享内存中做一个标识，这样当一个事务申请弱锁时就会出现以下两种情况。
+	 * • 如果其他事务已经获得了这个对象的强锁，则本事务不会使用锁的Fast Path，它会按照常
+	 *   规的方法将锁保存到主锁表。
+	 * • 如果没有其他事务获得过这个对象的强锁，则本事务将本次的弱锁保存到本会话，也就是进入
+	 *   Fast Path模式。
+	 * 
+	 * 由于DML操作是常规操作，DDL操作或DCL操作的频率不高，那么数据库大部分时间都只会使用弱
+	 * 锁，这就避免了频繁访问主锁表，只将弱锁保存到当前会话，提高了数据库的性能（虽然判断是
+	 * 否有强锁也需要访问共享内存中FastPathStrongRelationLocks中的标记，但这种访问的粒
+	 * 度比较小）
+	 * 
+	 * 这不是个hash表, 记录是否有事务已获得这个对象的“强锁”。fast-path 将对弱锁的访问
+	 * 保存到本进程，避免频繁访问主锁表和进程锁表
 	*/
 	FastPathStrongRelationLocks =
 		ShmemInitStruct("Fast Path Strong Relation Lock Data",
@@ -515,12 +522,14 @@ InitLocks(void)
 	info.entrysize = sizeof(LOCALLOCK);
 
 	/*
-		为会话创建一个LockMethodLocalHash锁表，我们可以叫它本地锁表。在一个事务中，对同
-		一个对象可能会多次申请同类型的锁。当第一次申请这个类型的锁时，我们需要保证它和其他事
-		务不冲突，然后才可以获得这个锁。同时，一旦事务获得了某个锁，根据严格两阶段锁协议，这
-		个锁要到事务结束才会被释放，因此当事务重复在同一个锁对象上申请同类型的锁时，就无须做
-		冲突检测，可以认为自己已经获得了这个锁，只要将这个锁记录在本地就可以了
-	*/
+	 * 为会话创建一个 LockMethodLocalHash 锁表，我们可以叫它本地锁表。在一个事务中，对同
+	 * 一个对象可能会多次申请同类型的锁。当第一次申请这个类型的锁时，我们需要保证它和其他事
+	 * 务不冲突，然后才可以获得这个锁。同时，一旦事务获得了某个锁，根据严格两阶段锁协议，这
+	 * 个锁要到事务结束才会被释放，因此当事务重复在同一个锁对象上申请同类型的锁时，就无须做
+	 * 冲突检测，可以认为自己已经获得了这个锁，只要将这个锁记录在本地就可以了
+	 * 
+	 * 本地锁表用于保存本地锁计数和资源属主信息, 这不是个共享表
+	 */
 	LockMethodLocalHash = hash_create("LOCALLOCK hash",
 									  16,
 									  &info,
@@ -774,6 +783,13 @@ LockAcquire(const LOCKTAG *locktag,
  */
 /* 对于像封锁这样的高频操作，性能是非常重要的
  * 本地锁表的判断和获取
+ *
+ * 常规锁主要保存在以下4个位置：
+ *
+ *  本地锁表（LOCALLOCK 结构体）：对于重复申请的锁进行计数，避免频繁访问主锁表和进程锁表，相当于一层缓存
+ *  快速路径（fast path）：对弱锁的访问保存到本进程，避免频繁访问主锁表和进程锁表
+ *  主锁表（LOCK 结构体）：保存一个锁对象所有相关信息
+ *  进程锁表（PROCLOCK 结构体）：保存一个锁对象中与当前会话（进程）相关的信息
  */
 LockAcquireResult
 LockAcquireExtended(const LOCKTAG *locktag,
@@ -786,6 +802,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 					bool reportMemoryError)
 {
 	LOCKMETHODID lockmethodid = locktag->locktag_lockmethodid;
+	/* LockConflicts 锁的冲突矩阵 */
 	LockMethod	lockMethodTable;
 	LOCALLOCKTAG localtag;
 	LOCALLOCK  *locallock;
@@ -977,7 +994,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			acquired = false;
 		
 		/* 2. 当前进程是否还有空间可以保存弱锁 如果弱锁保存在本事务的fast path中，实际
-		 * 上它是保存在PGPROC中的(代码在proc.h)
+		 * 上它是保存在 PGPROC 中的(代码在proc.h)
 		 * 
 		 * #define		FP_LOCK_SLOTS_PER_BACKEND 16
 		 * 
@@ -985,7 +1002,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 		 *  uint64		fpLockBits;		
 		 *  Oid			fpRelId[FP_LOCK_SLOTS_PER_BACKEND];
 		 * 
-		 * PGPROC->fpRelId是一个长度为16的数组，里面保存的是表的 oid，因此最多保存16个弱锁.
+		 * PGPROC->fpRelId 是一个长度为16的数组，里面保存的是表的 oid，因此最多保存16个弱锁.
 		 * PGPROC->fpLockBits 保存的是一个位图，目前64位中（uint64）只用了48位。每3位组成
 		 * 一个槽（因为共有3种弱锁），每个槽都与 PGPROC->fpRelId 数组中的表对应(所以3*16=48).
 		 * 宏定义见 FAST_PATH_GET_BITS(lock.c)
@@ -1030,8 +1047,8 @@ LockAcquireExtended(const LOCKTAG *locktag,
 		/* 设置强锁标记, 即 FastPathStrongRelationLocks->count(也是一个数组)的引用计数加1 */
 		BeginStrongLockAcquire(locallock, fasthashcode);
 		/* 
-		 * 把目前其他事务保存的对应弱锁转移到主锁表中。因为有了强锁之后，弱锁和强锁之间就有了等待
-		 * 关系（冲突），因此需要把保存在 PGPROC 中的弱锁转移进主锁表，方便进行死锁检查.
+		 * 把目前其他事务保存的对应弱锁(同一个 hashcode)转移到主锁表中。因为有了强锁之后，弱锁和强锁
+		 * 之间就有了等待关系（冲突），因此需要把保存在 PGPROC 中的弱锁转移进主锁表，方便进行死锁检查.
 		 * 
 		 * 把其他事务保存的对应弱锁转移到主锁表中，方便死锁检测（因为有强锁之后就会有等待）
 		*/
@@ -1068,9 +1085,9 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	 * lock and proclock pointers, even if they're already set.
 	 */
 	/*
-	  主要作用就是在主锁表和进程锁表中查找对应的锁，如果该锁还没有存在，则在主锁表和进程锁表中申请
-	  内存来保存锁并且初始化锁的信息
-	*/
+	 * 主要作用就是在主锁表和进程锁表中查找对应的锁，如果该锁还没有存在，则在主锁表和进程锁表中申请
+	 * 内存来保存锁并且初始化锁的信息
+	 */
 	proclock = SetupLockInTable(lockMethodTable, MyProc, locktag,
 								hashcode, lockmode);
 	if (!proclock)
@@ -1089,19 +1106,27 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	lock = proclock->tag.myLock;
 	locallock->lock = lock;
 
+	/* 在主锁表和进程锁表中保存锁之后，就可以进行锁的冲突检测。如果检测到当前申请的锁模式
+	 * 与其他事务已持有锁冲突，则必须进入等待状态
+	 */
+
 	/*
 	 * If lock requested conflicts with locks requested by waiters, must join
 	 * wait queue.  Otherwise, check for conflict with already-held locks.
 	 * (That's last because most complex check.)
 	 */
 	/*
-	  ockMethodTable->conflictTab[lockmode] 获得的是与申请锁模式冲突的锁模式
-	  lock->waitMask 中的是这个锁上等待的其他事务想要申请的锁模式
-	  如果当前的申请锁模式与其他事务冲突，则必须进入等待状态
+	 * lockMethodTable->conflictTab[lockmode] 获得的是与申请锁模式冲突的锁模式
+	 * lock->waitMask 中保存的是在这个 锁上等待 的 其他事务 想要申请的锁模式
+	 * 如果两者有交集（按位与结果为 true），说明申请申请的锁模式与其他事务正在等待的锁
+	 * 模式冲突, 则必须进入等待状态
 	*/
 	if (lockMethodTable->conflictTab[lockmode] & lock->waitMask)
 		status = STATUS_FOUND;
-	else // 检查当前申请的模式与其他事务已经持有的模式是否存在冲突
+	/* 如果没有其他事务等待这个锁，则检查当前申请的锁模式，是否与其他事务已持有的锁冲突
+	 * if 部分是检查其他事务等待队列，else 部分是检查其他事务已持锁队列
+	 */
+	else
 		status = LockCheckConflicts(lockMethodTable, lockmode,
 									lock, proclock);
 
@@ -1140,6 +1165,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			}
 			else
 				PROCLOCK_PRINT("LockAcquire: NOWAIT", proclock);
+			/* 不用等锁暂时不做 reques 统计 */
 			lock->nRequested--;
 			lock->requested[lockmode]--;
 			LOCK_PRINT("LockAcquire: conditional lock failed", lock, lockmode);
@@ -1238,6 +1264,13 @@ LockAcquireExtended(const LOCKTAG *locktag,
  * The appropriate partition lock must be held at entry, and will be
  * held at exit.
  */
+/*
+ * 实际上，本地锁表和 fast path 的主要目的都是提升性能，它们已经可以处理大多数情况，其
+ * 他情况则需要对 主锁表 和 进程锁 表进行查询，根据锁的状态决定是获得锁还是进入等待.
+ * 
+ * SetupLockInTable 函数的主要作用就是在主锁表和进程锁表中查找对应的锁，如果该锁还
+ * 不存在，则在主锁表和进程锁表中申请内存来保存锁并初始化锁的信息
+ */
 static PROCLOCK *
 SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 				 const LOCKTAG *locktag, uint32 hashcode, LOCKMODE lockmode)
@@ -1251,13 +1284,14 @@ SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 	/*
 	 * Find or create a lock with this tag.
 	 */
-	// 从主锁表中查找 lock 对象
+	// 从主锁表 LockMethodLockHash 中查找 lock 对象
 	lock = (LOCK *) hash_search_with_hash_value(LockMethodLockHash,
 												(const void *) locktag,
 												hashcode,
 												HASH_ENTER_NULL,
 												&found);
 	if (!lock) // 无论是否找到，lock 都不应该是 NULL
+		/* 表示由于共享内存不足报错了, lock 为空（正常找不找得到都不应该是空） */
 		return NULL;
 
 	/*
@@ -1276,7 +1310,7 @@ SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 		MemSet(lock->granted, 0, sizeof(int) * MAX_LOCKMODES);
 		LOCK_PRINT("LockAcquire: new", lock, lockmode);
 	}
-	else
+	else /* 如果不是，输出已找到该锁，并做一些判断 */
 	{
 		LOCK_PRINT("LockAcquire: found", lock, lockmode);
 		Assert((lock->nRequested >= 0) && (lock->requested[lockmode] >= 0));
@@ -1295,16 +1329,17 @@ SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 
 	/*
 	 * Find or create a proclock entry with this tag
+	 * 根据 lock 和 PGPROC 信息在进程锁表 LockMethodProcLockHash 中查找
 	 */
 	proclock = (PROCLOCK *) hash_search_with_hash_value(LockMethodProcLockHash,
 														(void *) &proclocktag,
 														proclock_hashcode,
 														HASH_ENTER_NULL,
 														&found);
+	// 如果由于内存不足导致没有获得 proclock，则需要把主锁表中的信息也删除
 	if (!proclock)
 	{
 		/* Oops, not enough shmem for the proclock */
-		// 如果由于内存不足导致没有获得 proclock，则需要吧主锁表中的信息也删除
 		if (lock->nRequested == 0)
 		{
 			/*
@@ -1326,7 +1361,7 @@ SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 
 	/*
 	 * If new, initialize the new entry
-	 * 初始化 PROCLOCK
+	 * 如果没找到，初始化进程锁表 初始化 PROCLOCK
 	 */
 	if (!found)
 	{
@@ -1352,12 +1387,13 @@ SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 							 &proclock->procLink);
 		PROCLOCK_PRINT("LockAcquire: new", proclock);
 	}
-	else
+	else /* 否则，输出找到了，并做一些判断 */
 	{
 		PROCLOCK_PRINT("LockAcquire: found", proclock);
 		Assert((proclock->holdMask & ~lock->grantMask) == 0);
 
 #ifdef CHECK_DEADLOCK_RISK
+		/* 死锁风险判断 */
 
 		/*
 		 * Issue warning if we already hold a lower-level lock on this object
@@ -1375,11 +1411,12 @@ SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 		 */
 		{
 			int			i;
-
+			/* 从拥有的最高级模式锁开始检查 */
 			for (i = lockMethodTable->numLockModes; i > 0; i--)
 			{
 				if (proclock->holdMask & LOCKBIT_ON(i))
 				{
+					/* 如果持锁等级 >= 请求等级，不会有死锁风险 */
 					if (i >= (int) lockmode)
 						break;	/* safe: we have a lock >= req level */
 					elog(LOG, "deadlock risk: raising lock level"
@@ -1478,6 +1515,7 @@ LockCheckConflicts(LockMethod lockMethodTable,
 {
 	int			numLockModes = lockMethodTable->numLockModes;
 	LOCKMASK	myLocks;
+	/* 与待申请锁冲突的模式 */
 	int			conflictMask = lockMethodTable->conflictTab[lockmode];
 	int			conflictsRemaining[MAX_LOCKMODES];
 	int			totalConflictsRemaining = 0;
@@ -1495,11 +1533,14 @@ LockCheckConflicts(LockMethod lockMethodTable,
 	 * there is a conflict.
 	 */
 	/*
-	   如果当前想要持有的锁与已经持有的所有模式都不冲突，则能直接获得锁
-	   其中 lock->grantMask 中保存的是其他事务已经持有的当前锁对象的所有模式
-	   conflictMask = lockMethodTable->conflictTab[lockmode] 标志与当前申请的锁模式
-	    冲突的锁模式
+	 * 如果当前想要持有的锁与已经持有的所有模式都不冲突，则能直接获得锁
+	 * 其中 lock->grantMask 中保存的是其他事务已经持有的当前锁对象的所有模式
+	 * conflictMask = lockMethodTable->conflictTab[lockmode] 标志与当前申请的锁模式
+	 *  冲突的锁模式
+	 * 
+	 * lock->grantMask 为其他事务当前已持有的锁模式, conflictMask 为与待申请锁冲突的模式
 	*/
+	/* 如果两者无交集，说明待申请的锁模式与其他事务已持有的锁模式均不冲突，可以直接获取 */
 	if (!(conflictMask & lock->grantMask))
 	{
 		PROCLOCK_PRINT("LockCheckConflicts: no conflict", proclock);
@@ -1513,15 +1554,16 @@ LockCheckConflicts(LockMethod lockMethodTable,
 	 */
 	// 当前事务持有的该锁对象的某些模式
 	myLocks = proclock->holdMask;
+	/* 循环分析8种锁模式 */
 	for (i = 1; i <= numLockModes; i++)
 	{	
-		// 该锁模式与想要持有的锁模式不冲突，跳过
+		// 待申请的锁模式 conflictMask 与 当前锁模式i 不冲突，跳过
 		if ((conflictMask & LOCKBIT_ON(i)) == 0)
 		{
 			conflictsRemaining[i] = 0;
 			continue;
 		}
-		// 第 i 个模式在 lock 上被授予了多少次
+		// 记录当前锁模式 i 在 lock 中被授予了多少次
 		conflictsRemaining[i] = lock->granted[i];
 		// 如果当前会话持有了这个锁对象的第 i 个锁模式，减去，因为自己和自己不冲突
 		if (myLocks & LOCKBIT_ON(i))
@@ -1531,7 +1573,7 @@ LockCheckConflicts(LockMethod lockMethodTable,
 	}
 
 	/* If no conflicts remain, we get the lock. */
-	// 没有事务持有与当前锁模式冲突的锁模式，直接获得锁
+	// 当前事务已经持有的锁 没有与要加锁模式有冲突时，直接获得锁
 	if (totalConflictsRemaining == 0)
 	{
 		PROCLOCK_PRINT("LockCheckConflicts: resolved (simple)", proclock);
@@ -1557,9 +1599,9 @@ LockCheckConflicts(LockMethod lockMethodTable,
 	 * it.
 	 */
 	/*
-		上面已经判断了单进程事务的情况，如果当前事务是多进程事务(并行执行)，则这些相同进程持有的
-		锁是不冲突的，因此要在 totalConflictsRemaining 减去与当前事务有相同 group leader 的
-		事务的计数，如果最终 totalConflictsRemaining 变成了 0，则可以直接获得锁，否不能
+	 * 上面已经判断了单进程事务的情况，如果当前事务是多进程事务(并行执行)，则这些相同进程持有的
+	 * 锁是不冲突的，因此要在 totalConflictsRemaining 减去与当前事务有相同 group leader 的
+	 * 事务的计数，如果最终 totalConflictsRemaining 变成了 0，则可以直接获得锁，否不能
 	*/
 	procLocks = &(lock->procLocks);
 	otherproclock = (PROCLOCK *)
@@ -1762,6 +1804,7 @@ GrantLockLocal(LOCALLOCK *locallock, ResourceOwner owner)
 	/* Count the per-owner lock 增加对应 owner 持锁数 */
 	for (i = 0; i < locallock->numLockOwners; i++)
 	{
+		/* 一般来说第三次申请该锁*/
 		if (lockOwners[i].owner == owner)
 		{
 			lockOwners[i].nLocks++;
@@ -1925,6 +1968,7 @@ WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner)
 			awaitedLock = NULL;
 			LOCK_PRINT("WaitOnLock: aborting on lock",
 					   locallock->lock, locallock->tag.mode);
+			/* MainLWLockArray 中找到对应的lwlock */
 			LWLockRelease(LockHashPartitionLock(locallock->hashcode));
 
 			/*
@@ -2704,8 +2748,13 @@ LockReassignOwner(LOCALLOCK *locallock, ResourceOwner parent)
  *		Grant lock using per-backend fast-path array, if there is space.
  */
 /*
-  如果弱锁保存在本事务的 Fast Path 中，则实际上它是保存在 PGPROC 中的，共可以保留
-  FP_LOCK_SLOTS_PER_BACKEND = 16个弱锁
+ * 如果弱锁保存在本事务的 Fast Path 中，则实际上它是保存在 PGPROC 中的，共可以保留
+ * FP_LOCK_SLOTS_PER_BACKEND = 16个弱锁
+ * 
+ * PGPROC->fpRelId 是一个长度为16的数组，里面保存的是表的 oid，因此最多保存16个弱锁.
+ * PGPROC->fpLockBits 保存的是一个位图，目前64位中（uint64）只用了48位。每3位组成
+ * 一个槽（因为共有3种弱锁），每个槽都与 PGPROC->fpRelId 数组中的表对应(所以3*16=48).
+ * 宏定义见 FAST_PATH_GET_BITS(lock.c)
 */
 static bool
 FastPathGrantRelationLock(Oid relid, LOCKMODE lockmode)

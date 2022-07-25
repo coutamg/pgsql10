@@ -37,16 +37,27 @@
  * tuple locks (FOR KEY SHARE, FOR SHARE, FOR NO KEY UPDATE, FOR UPDATE); the
  * next two are used for update and delete modes.
  */
+/* 参考 multixact_lock.png
+ * 通常如果只有一个事务增加行锁，那么直接将行的 xmax 设为事务 id，并在 infomask 中设置对应
+ * 锁类型即可。
+ * 
+ * 但 select…for… 语句中可以加行级共享锁，即可以有多个事务对一个元组加共享锁，这时就没法通过
+ * 将行的 xmax 设为事务 id 来表示了。为此，pg将多个事务组成一个 mXactCacheEnt（multixact.c文件）
+ * 并为其指定唯一的 MultiXactId，此时在 xmax 处保存的就是 MultiXactId
+ * 
+ * 参考：
+ * https://weread.qq.com/web/reader/6c0329907263ff646c07cd0kb6d32b90216b6d767d2f0dc
+ */
 typedef enum
 {
-	MultiXactStatusForKeyShare = 0x00,
-	MultiXactStatusForShare = 0x01,
-	MultiXactStatusForNoKeyUpdate = 0x02,
-	MultiXactStatusForUpdate = 0x03,
+	MultiXactStatusForKeyShare = 0x00,    /* for key share */
+	MultiXactStatusForShare = 0x01,	      /* for share */
+	MultiXactStatusForNoKeyUpdate = 0x02, /* for no key update */
+	MultiXactStatusForUpdate = 0x03,	  /* for update */
 	/* an update that doesn't touch "key" columns */
-	MultiXactStatusNoKeyUpdate = 0x04,
+	MultiXactStatusNoKeyUpdate = 0x04,    /* update 操作, 但未修改主键 */
 	/* other updates, and delete */
-	MultiXactStatusUpdate = 0x05
+	MultiXactStatusUpdate = 0x05 		  /* update, delete 操作 */
 } MultiXactStatus;
 
 #define MaxMultiXactStatus MultiXactStatusUpdate

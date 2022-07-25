@@ -18,6 +18,21 @@
  *		ExecInitMaterial		- initialize node and subnodes
  *		ExecEndMaterial			- shutdown node and subnodes
  *
+ * 参考 https://www.cnblogs.com/flying-tiger/p/8302733.html
+ * 
+ * postgres=# explain select * from test_dm where id > any (select id from 
+ * 			  test_new);
+ *                                QUERY PLAN
+ * ------------------------------------------------------------------------
+ *  Nested Loop Semi Join  (cost=0.00..32201696.41 rows=333333 width=68)
+ *    Join Filter: (test_dm.id > test_new.id)
+ *    ->  Seq Scan on test_dm  (cost=0.00..22346.00 rows=1000000 width=68)
+ *    ->  Materialize  (cost=0.00..58.25 rows=2550 width=4)
+ *          ->  Seq Scan on test_new  (cost=0.00..35.50 rows=2550 width=4)
+ * (5 行)
+ * 
+ * 这里的子查询 “select id from test_new” 的结果在主查询中会使用多次，因此 postgres
+ * 将其查询结果缓存下来，避免多次重复的查询
  */
 #include "postgres.h"
 
@@ -58,9 +73,12 @@ ExecMaterial(PlanState *pstate)
 
 	/*
 	 * If first time through, and we need a tuplestore, initialize it.
+	 *
+	 * 判断是否已经初始化 tuplestorestate
 	 */
 	if (tuplestorestate == NULL && node->eflags != 0)
 	{
+		/* 调用 tuplestore_begin_heap 创建 Tuplestorestate 结构 */
 		tuplestorestate = tuplestore_begin_heap(true, false, work_mem);
 		tuplestore_set_eflags(tuplestorestate, node->eflags);
 		if (node->eflags & EXEC_FLAG_MARK)
@@ -107,6 +125,7 @@ ExecMaterial(PlanState *pstate)
 	slot = node->ss.ps.ps_ResultTupleSlot;
 	if (!eof_tuplestore)
 	{
+		/* 把当前缓存中未返回的元组取出并返回 */
 		if (tuplestore_gettupleslot(tuplestorestate, forward, false, slot))
 			return slot;
 		if (forward)
@@ -120,6 +139,9 @@ ExecMaterial(PlanState *pstate)
 	 * subplan calls.  It's not optional, unfortunately, because some plan
 	 * node types are not robust about being called again when they've already
 	 * returned NULL.
+	 * 
+	 * 若不存在未返回的元组，则需要进一步判断下层节点是否扫描完毕（eof_underiying 为 true
+	 * 表示扫描完毕）
 	 */
 	if (eof_tuplestore && !node->eof_underlying)
 	{
@@ -132,6 +154,7 @@ ExecMaterial(PlanState *pstate)
 		 */
 		outerNode = outerPlanState(node);
 		outerslot = ExecProcNode(outerNode);
+		/* 下层节点已经完成扫描，则 Material 节点将返回空元组 */
 		if (TupIsNull(outerslot))
 		{
 			node->eof_underlying = true;
@@ -142,12 +165,16 @@ ExecMaterial(PlanState *pstate)
 		 * Append a copy of the returned tuple to tuplestore.  NOTE: because
 		 * the tuplestore is certainly in EOF state, its read position will
 		 * move forward over the added tuple.  This is what we want.
+		 * 
+		 * 下层节点没有扫描完成则会从下层节点获取元组放入缓存中
 		 */
 		if (tuplestorestate)
 			tuplestore_puttupleslot(tuplestorestate, outerslot);
 
 		/*
 		 * We can just return the subplan's returned tuple, without copying.
+		 *
+		 * 返回元组
 		 */
 		return outerslot;
 	}

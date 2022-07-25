@@ -310,8 +310,14 @@ static MultiXactId *OldestVisibleMXactId;
  * We allocate the cache entries in a memory context that is deleted at
  * transaction end, so we don't need to do retail freeing of entries.
  */
+/* 多个事务可以对一个元组加共享锁，xmax 无法同时表达多个事务，因此将多个事务组合在一
+ * 起形成一个 mXactCacheEnt。并为其指定一个唯一的 MultiXactId，在 xmax 处保存的
+ * 就是 MultiXactId。为了区分事务 ID 和 MultiXactId，在使用 MultiXactId 时会
+ * 在元组上增加 HEAP_XMAX_IS_MULTI 标记
+ */
 typedef struct mXactCacheEnt
 {
+	/* multi 与 事务 id 关系见 multixact_to_transactionId.png */
 	MultiXactId multi;
 	int			nmembers;
 	dlist_node	node;
